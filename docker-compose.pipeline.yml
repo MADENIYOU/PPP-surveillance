@@ -1,0 +1,93 @@
+# ============================================================================
+# Pipeline de traitement — Surveillance Citoyenne de la Pollution à Dakar
+#
+# Dépend de l'infra de base. Démarrage :
+#
+#   # 1. Infra d'abord (si pas déjà démarrée)
+#   docker compose -f docker-compose.infra.yml up -d
+#
+#   # 2. Pipeline (workers + flows)
+#   docker compose -f docker-compose.infra.yml -f docker-compose.pipeline.yml up -d
+#
+# Pour tout arrêter proprement :
+#   docker compose -f docker-compose.infra.yml -f docker-compose.pipeline.yml down
+# ============================================================================
+
+services:
+
+  # ── Workers permanents (ingestion + calibration + anomaly via supervisord) ─
+  pipeline-workers:
+    build:
+      context: ./pipeline
+      dockerfile: Dockerfile
+    image: dakar-pipeline:latest
+    container_name: dakar-pipeline-workers
+    restart: unless-stopped
+    command: ["supervisord", "-c", "/app/supervisord.conf"]
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+    environment:
+      # PostgreSQL
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-dakar_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requis}
+      POSTGRES_DB: ${POSTGRES_DB:-dakar_pollution}
+      # InfluxDB
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_ADMIN_TOKEN:?INFLUXDB_ADMIN_TOKEN requis}
+      INFLUXDB_ORG: ${INFLUXDB_ORG:-dakar_pollution}
+      # MQTT
+      MQTT_BROKER: mosquitto
+      MQTT_PORT: 1883
+      # Nombre de capteurs attendus par heure (pour Q1)
+      EXPECTED_SENSORS: 10
+    volumes:
+      - pipeline-models:/app/models          # modèles ML partagés entre workers et flows
+      - pipeline-dead-letter:/app/dead_letter
+      - pipeline-logs:/app/logs
+    networks: [dakar-net]
+    healthcheck:
+      test: ["CMD-SHELL", "supervisorctl -c /app/supervisord.conf status | grep -v STOPPED | grep -q RUNNING || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # ── Ordonnanceur de flows (APScheduler — feature engineering, prédictions…) ─
+  pipeline-flows:
+    image: dakar-pipeline:latest
+    container_name: dakar-pipeline-flows
+    restart: unless-stopped
+    command: ["python", "/app/run_flows.py"]
+    depends_on:
+      pipeline-workers:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-dakar_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requis}
+      POSTGRES_DB: ${POSTGRES_DB:-dakar_pollution}
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_ADMIN_TOKEN:?INFLUXDB_ADMIN_TOKEN requis}
+      INFLUXDB_ORG: ${INFLUXDB_ORG:-dakar_pollution}
+      EXPECTED_SENSORS: 10
+    volumes:
+      - pipeline-models:/app/models
+      - pipeline-logs:/app/logs
+    networks: [dakar-net]
+
+networks:
+  dakar-net:
+    external: true         # réseau créé par docker-compose.infra.yml
+
+volumes:
+  pipeline-models:
+  pipeline-dead-letter:
+  pipeline-logs:

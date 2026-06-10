@@ -1,0 +1,31 @@
+# ============================================================================
+# Scénarios d'anomalies prédéfinis — Simulation Dakar (DIC2)
+# Référence : simulation/SIMULATION_SPEC.md §4.2
+#
+# Chargé via `data_generator.py --scenario config/anomaly_scenarios.yaml`.
+# Chaque scénario se déclenche une fois, à `trigger_time` (UTC), sur les
+# capteurs désignés par `affected_sensors` ou appartenant à `affected_zones`
+# ("all" = tous les capteurs simulés).
+# ============================================================================
+scenarios:
+  - name: "feux_mbeubeuss"
+    trigger_time: "2026-06-05T14:00:00Z"
+    affected_zones: ["pikine", "grand_dakar"]
+    type: SPIKE
+    factor: 5.0
+    duration_minutes: 120
+    pollutants: [pm25, pm10]
+
+  - name: "harmattan_event"
+    trigger_time: "2026-01-15T06:00:00Z"
+    affected_zones: ["all"]
+    type: HARMATTAN
+    intensity: 6.0
+    duration_hours: 48
+    pollutants: [pm10, pm25]
+
+  - name: "panne_capteur_pikine"
+    trigger_time: "2026-06-10T08:00:00Z"
+    affected_sensors: ["ESP32-DK-PIKINE-001"]
+    type: STUCK
+    duration_minutes: 180

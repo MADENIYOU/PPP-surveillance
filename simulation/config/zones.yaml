@@ -1,0 +1,190 @@
+# ============================================================================
+# Profils de pollution par zone — Simulation Dakar (DIC2)
+# Référence : simulation/SIMULATION_SPEC.md §3.1 (cycle PM2.5), §3.4 (cycle NO2),
+#             §6.2 (pollution_profiles utilisés par sensors.yaml)
+# ============================================================================
+
+# ── §3.1 : paramètres du modèle bimodal PM2.5 par zone ─────────────────────
+# PM2.5_vrai(h, zone) = PM_base
+#   + A_matin × exp(-(h-h_matin)² / (2×σ_matin²))
+#   + A_soir  × exp(-(h-h_soir)²  / (2×σ_soir²))
+#   + A_nuit  × exp(-(h-h_nuit)²  / (2×σ_nuit²))    [h_nuit fixé à 22h, σ_nuit du tableau]
+#   + Fond_harmattan(mois) × H_flag
+# σ_matin = 1.5h, σ_soir = 2.0h, σ_nuit = 1.0h (constantes globales, voir atmospheric_models.py)
+zones:
+  plateau:
+    nom: "Plateau"
+    pm_base: 22
+    a_matin: 18
+    h_matin: 8.0
+    a_soir: 15
+    h_soir: 18.0
+    a_nuit: 5
+    no2_base: 20
+    no2_b_matin: 30
+    no2_b_soir: 25
+
+  medina:
+    nom: "Médina"
+    pm_base: 18
+    a_matin: 12
+    h_matin: 8.5
+    a_soir: 10
+    h_soir: 18.5
+    a_nuit: 4
+    # NO2 non documenté pour cette zone dans SIMULATION_SPEC.md §3.4 — estimé par
+    # analogie avec Plateau (densité comparable, trafic légèrement moindre).
+    no2_base: 17
+    no2_b_matin: 24
+    no2_b_soir: 20
+
+  almadies:
+    nom: "Almadies"
+    pm_base: 10
+    a_matin: 6
+    h_matin: 8.0
+    a_soir: 5
+    h_soir: 17.5
+    a_nuit: 2
+    no2_base: 10
+    no2_b_matin: 15
+    no2_b_soir: 12
+
+  pikine:
+    nom: "Pikine"
+    pm_base: 28
+    a_matin: 20
+    h_matin: 7.5
+    a_soir: 18
+    h_soir: 17.0
+    a_nuit: 8
+    no2_base: 18
+    no2_b_matin: 22
+    no2_b_soir: 18
+
+  rufisque:
+    nom: "Rufisque"
+    pm_base: 25
+    a_matin: 15
+    h_matin: 7.0
+    a_soir: 12
+    h_soir: 17.0
+    a_nuit: 6
+    # Estimé par analogie avec Pikine/Port (zone industrielle, activité continue).
+    no2_base: 22
+    no2_b_matin: 18
+    no2_b_soir: 16
+
+  grand_dakar:
+    nom: "Grand-Dakar"
+    pm_base: 20
+    a_matin: 14
+    h_matin: 8.0
+    a_soir: 12
+    h_soir: 18.0
+    a_nuit: 4
+    # Estimé par analogie avec Médina (résidentiel moyen, trafic modéré).
+    no2_base: 16
+    no2_b_matin: 20
+    no2_b_soir: 17
+
+  guediawaye:
+    nom: "Guédiawaye"
+    pm_base: 24
+    a_matin: 16
+    h_matin: 7.5
+    a_soir: 14
+    h_soir: 17.5
+    a_nuit: 5
+    # Estimé par analogie avec Pikine (périphérie dense, profil similaire).
+    no2_base: 17
+    no2_b_matin: 21
+    no2_b_soir: 17
+
+  parcelles_assainies:
+    nom: "Parcelles"
+    pm_base: 16
+    a_matin: 10
+    h_matin: 8.5
+    a_soir: 9
+    h_soir: 18.5
+    a_nuit: 3
+    # Estimé par analogie avec Médina/Grand-Dakar (résidentiel).
+    no2_base: 14
+    no2_b_matin: 18
+    no2_b_soir: 15
+
+  fann_pe:
+    nom: "Fann-P.E"
+    pm_base: 12
+    a_matin: 8
+    h_matin: 8.0
+    a_soir: 7
+    h_soir: 17.5
+    a_nuit: 2
+    # Estimé par analogie avec Almadies (quartier diplomatique aéré, peu de trafic lourd).
+    no2_base: 11
+    no2_b_matin: 14
+    no2_b_soir: 11
+
+  port:
+    nom: "Port"
+    pm_base: 30
+    a_matin: 12
+    h_matin: 6.0
+    a_soir: 10
+    h_soir: 16.0
+    a_nuit: 8
+    no2_base: 35
+    no2_b_matin: 20
+    no2_b_soir: 15
+
+# ── §6.2 : profils de pollution référencés par sensors.yaml (pollution_profile) ─
+# Modulent les paramètres de zone ci-dessus (multiplicateurs et options).
+pollution_profiles:
+  urban_high:
+    pm_multiplier: 1.0
+    no2_multiplier: 1.4
+    co_multiplier: 1.3
+
+  urban_medium:
+    pm_multiplier: 0.85
+    no2_multiplier: 1.0
+    co_multiplier: 1.0
+
+  coastal_low:
+    pm_multiplier: 0.55
+    sea_breeze_reduction: 0.30
+    no2_multiplier: 0.9
+    co_multiplier: 0.8
+
+  periurban_high:
+    pm_multiplier: 1.2
+    industrial_baseline: 8
+    waste_burning_events: true
+    no2_multiplier: 1.1
+    co_multiplier: 1.1
+
+  periurban_medium:
+    pm_multiplier: 1.0
+    no2_multiplier: 1.0
+    co_multiplier: 1.0
+
+  industrial_high:
+    pm_multiplier: 1.1
+    so2_enabled: true
+    industrial_schedule: "24h"
+    no2_multiplier: 1.2
+    co_multiplier: 1.2
+
+  port_high:
+    pm_multiplier: 1.1
+    shipping_no2_factor: 2.0
+    continuous_activity: true
+    no2_multiplier: 1.5
+    co_multiplier: 1.2
+
+  residential_low:
+    pm_multiplier: 0.65
+    no2_multiplier: 0.7
+    co_multiplier: 0.7

@@ -1,0 +1,115 @@
+# ============================================================================
+# Infrastructure de base — Surveillance Citoyenne de la Pollution à Dakar (DIC2)
+# Référence : 06_gestion/ROADMAP_PHASE_3.md (I3.6) + 00_fondations/CHOIX_TECHNIQUES.md
+#
+# Démarrage : docker compose -f docker-compose.infra.yml up -d
+# Critère NFR-M01 : doit converger (tous les healthchecks "healthy") en < 2 min.
+#
+# Secrets : voir .env.example — copier en .env et adapter avant le premier "up".
+# Ne jamais committer .env (mots de passe, tokens admin).
+# ============================================================================
+
+services:
+
+  # ── Broker MQTT — point d'entrée des capteurs (réels et simulés) ───────────
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: dakar-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"   # MQTT clair (Phase 3 — allow_anonymous true)
+      - "9001:9001"   # MQTT over WebSockets
+      - "8883:8883"   # MQTT TLS/mTLS (activé après génération des certs en S3.3)
+    volumes:
+      - ./infra/mosquitto/config:/mosquitto/config:ro
+      - ./infra/mosquitto/certs:/mosquitto/certs:ro
+      - mosquitto-data:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/#' -C 1 -W 3 -i healthcheck | grep -q . || exit 1"]
+      interval: 10s
+      timeout: 8s
+      retries: 6
+      start_period: 10s
+    networks: [dakar-net]
+
+  # ── Base relationnelle — métadonnées, prédictions, kriging, signalements ───
+  postgres:
+    build: ./infra/postgres
+    image: dakar-postgres-postgis-pgvector:16
+    container_name: dakar-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dakar_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requis — voir .env.example}
+      POSTGRES_DB: ${POSTGRES_DB:-dakar_pollution}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Exécuté automatiquement par l'image officielle au tout premier démarrage
+      # (répertoire de données vide) — voir 01_schema.sql, idempotent (CREATE ... IF NOT EXISTS).
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dakar_admin} -d ${POSTGRES_DB:-dakar_pollution}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks: [dakar-net]
+
+  # ── Base séries temporelles — mesures brutes/calibrées/agrégées ────────────
+  influxdb:
+    image: influxdb:2.7
+    container_name: dakar-influxdb
+    restart: unless-stopped
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_USER:-dakar_admin}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_PASSWORD:?INFLUXDB_PASSWORD requis — voir .env.example}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG:-dakar_pollution}
+      DOCKER_INFLUXDB_INIT_BUCKET: bucket_raw
+      DOCKER_INFLUXDB_INIT_RETENTION: 168h
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_ADMIN_TOKEN:?INFLUXDB_ADMIN_TOKEN requis — voir .env.example}
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+      - influxdb-config:/etc/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    networks: [dakar-net]
+
+  # ── Job one-shot : buckets manquants, tâches Flux planifiées, tokens scoped ─
+  influxdb-init:
+    image: influxdb:2.7
+    container_name: dakar-influxdb-init
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      INFLUX_HOST: http://influxdb:8086
+      INFLUX_ORG: ${INFLUXDB_ORG:-dakar_pollution}
+      INFLUX_TOKEN: ${INFLUXDB_ADMIN_TOKEN:?INFLUXDB_ADMIN_TOKEN requis — voir .env.example}
+    volumes:
+      - ./infra/influxdb:/config:ro
+      # Monté hors de /config (lecture seule) : le script y écrit les tokens générés.
+      - influxdb-tokens:/tokens
+    entrypoint: ["sh", "/config/influxdb_setup.sh"]
+    networks: [dakar-net]
+    # Job one-shot : se termine après exécution. "docker compose up" le marque
+    # "exited (0)" — c'est attendu, ce n'est pas un service longue durée.
+
+networks:
+  dakar-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  influxdb-data:
+  influxdb-config:
+  influxdb-tokens:
+  mosquitto-data:

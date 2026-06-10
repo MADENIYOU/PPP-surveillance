@@ -1,0 +1,29 @@
+# Exclure l'environnement virtuel local (très lourd, ~200 Mo)
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Modèles générés localement (montés en volume Docker)
+models/*.pkl
+models/*.pt
+models/*.json
+models/archive/
+
+# Données d'entraînement (générées à la demande)
+training/data/
+
+# Dead letter local
+dead_letter/*.jsonl
+
+# Logs locaux
+logs/
+*.log
+
+# Fichiers d'état Kalman (régénérés au démarrage)
+models/kalman_states.json
+
+# Fichiers temporaires
+*.tmp
+.DS_Store

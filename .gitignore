@@ -1,0 +1,23 @@
+# Secrets
+.env
+
+# Environnements virtuels Python
+**/.venv/
+**/venv/
+
+# Données générées (simulation, logs, modèles entraînés, certificats)
+**/ground_truth/
+**/logs/
+**/spiffs/
+**/dead_letter/
+**/certs/*.crt
+**/certs/*.key
+**/certs/*.csr
+**/models/*.pkl
+**/models/*.pt
+**/__pycache__/
+**/*.pyc
+**/.ipynb_checkpoints/
+
+# Notes de session (jamais versionné)
+HANDOFF.md

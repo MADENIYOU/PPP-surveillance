@@ -1,0 +1,147 @@
+# ============================================================================
+# Définition des 10 capteurs simulés — Simulation Dakar (DIC2)
+# Référence : simulation/SIMULATION_SPEC.md §6.1
+#
+# NB : "global" adapté à l'infra Phase 3 réellement déployée
+# (implementation/docker-compose.infra.yml) — Mosquitto sans TLS sur 1883
+# (allow_anonymous true). Le bloc TLS du document de spec sera réactivé en
+# S3.3 quand les certificats existeront (voir mosquitto.conf, PKI_SPEC.md).
+# ============================================================================
+global:
+  mqtt_broker: "localhost"
+  mqtt_port: 1883
+  tls_enabled: false
+  publish_interval_s: 30
+  default_firmware: "sim-v1.2.0"
+
+sensors:
+  - id: "ESP32-DK-MEDINA-001"
+    zone_id: "medina"
+    lat: 14.7067
+    lon: -17.4520
+    altitude_m: 12
+    pollution_profile: "urban_medium"
+    battery:
+      capacity_mah: 3000
+      solar_panel: true
+      solar_power_w: 5
+    install_date: "2026-06-01"
+    calibration_date: "2026-06-01"
+
+  - id: "ESP32-DK-PLATEAU-001"
+    zone_id: "plateau"
+    lat: 14.6937
+    lon: -17.4441
+    altitude_m: 15
+    pollution_profile: "urban_high"
+    battery:
+      capacity_mah: 2000
+      solar_panel: false
+    install_date: "2026-06-01"
+    calibration_date: "2026-06-01"
+
+  - id: "ESP32-DK-PIKINE-001"
+    zone_id: "pikine"
+    lat: 14.7456
+    lon: -17.3943
+    altitude_m: 8
+    pollution_profile: "periurban_high"
+    battery:
+      capacity_mah: 3500
+      solar_panel: true
+      solar_power_w: 10
+    install_date: "2026-06-01"
+    calibration_date: "2026-06-01"
+
+  - id: "ESP32-DK-ALMADIES-001"
+    zone_id: "almadies"
+    lat: 14.7456
+    lon: -17.5123
+    altitude_m: 20
+    pollution_profile: "coastal_low"
+    battery:
+      capacity_mah: 3000
+      solar_panel: true
+      solar_power_w: 5
+    install_date: "2026-06-01"
+    calibration_date: "2026-06-01"
+
+  - id: "ESP32-DK-RUFISQUE-001"
+    zone_id: "rufisque"
+    lat: 14.7152
+    lon: -17.2741
+    altitude_m: 10
+    pollution_profile: "industrial_high"
+    battery:
+      capacity_mah: 3000
+      solar_panel: true
+      solar_power_w: 5
+    install_date: "2026-06-01"
+    calibration_date: "2026-06-01"
+
+  - id: "ESP32-DK-PORT-001"
+    zone_id: "port"
+    lat: 14.6789
+    lon: -17.4235
+    altitude_m: 6
+    pollution_profile: "port_high"
+    battery:
+      capacity_mah: 3000
+      solar_panel: false
+    install_date: "2026-06-01"
+    calibration_date: "2026-06-01"
+
+  - id: "ESP32-DK-PARCELLES-001"
+    zone_id: "parcelles_assainies"
+    lat: 14.7678
+    lon: -17.4234
+    altitude_m: 14
+    pollution_profile: "urban_medium"
+    battery:
+      capacity_mah: 3000
+      solar_panel: true
+      solar_power_w: 5
+    install_date: "2026-06-01"
+    calibration_date: "2026-06-01"
+
+  - id: "ESP32-DK-GUEDIAWAYE-001"
+    zone_id: "guediawaye"
+    lat: 14.7789
+    lon: -17.3923
+    altitude_m: 9
+    pollution_profile: "periurban_medium"
+    battery:
+      capacity_mah: 3000
+      solar_panel: true
+      solar_power_w: 5
+    install_date: "2026-06-01"
+    calibration_date: "2026-06-01"
+
+  - id: "ESP32-DK-FANN-001"
+    zone_id: "fann_pe"
+    lat: 14.6934
+    lon: -17.4678
+    altitude_m: 18
+    pollution_profile: "residential_low"
+    battery:
+      capacity_mah: 3000
+      solar_panel: true
+      solar_power_w: 5
+    install_date: "2026-06-01"
+    calibration_date: "2026-06-01"
+
+  - id: "ESP32-DK-LORA-001"
+    zone_id: "grand_dakar"
+    lat: 14.7123
+    lon: -17.4567
+    altitude_m: 16
+    pollution_profile: "urban_medium"
+    network_type: "lora"
+    lora_sf: 10
+    lora_gateway: "GW-ESP-DAKAR-001"
+    battery:
+      capacity_mah: 3000
+      solar_panel: true
+      solar_power_w: 5
+    install_date: "2026-06-01"
+    calibration_date: "2026-06-01"

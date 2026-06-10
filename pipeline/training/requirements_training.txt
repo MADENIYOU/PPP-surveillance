@@ -1,0 +1,17 @@
+# Dépendances supplémentaires pour l'entraînement des modèles.
+# Ces packages sont LOURDS (torch ~2 Go, prophet ~200 Mo) et ne sont pas
+# nécessaires à l'exécution du pipeline — installer uniquement pour l'entraînement.
+#
+#   pip install -r requirements_training.txt
+
+# LSTM (PyTorch — CPU suffit pour entraîner sur données synthétiques)
+torch>=2.0,<3.0
+
+# Prédictions séries temporelles (cold start < 7 jours de données)
+prophet>=1.1
+
+# Téléchargement datasets publics
+requests>=2.31
+
+# Les autres dépendances (numpy, pandas, scikit-learn, joblib) sont
+# déjà dans pipeline/requirements.txt
