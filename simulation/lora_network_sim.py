@@ -5,23 +5,31 @@ Classe : LoRaNetworkSimulator.
 
 Génère des paquets LoRa au format §9.3 à partir des positions des capteurs et
 d'une gateway, en utilisant le modèle de propagation Okumura-Hata de
-`lora_propagation_sim`. Le payload réel envoyé sur LoRa est une trame binaire
-compacte (chiffrée AES-128 dans la réalité — ici un placeholder hex), et non
-le JSON MQTT complet : on retient une taille de ~20 octets, qui reproduit le
-`time_on_air_ms` ≈ 370 ms documenté dans l'exemple §9.3 pour SF10.
+`lora_propagation_sim`. Le payload envoyé sur LoRa est une trame binaire
+compacte de 20 octets (struct little-endian, mesures quantifiées) chiffrée
+AES-128-CTR à la manière LoRaWAN (bloc compteur A_i dérivé de DevAddr + FCnt,
+clé de session par nœud dérivée d'une clé réseau) — et non le JSON MQTT
+complet. La taille de 20 octets reproduit le `time_on_air_ms` ≈ 370 ms
+documenté dans l'exemple §9.3 pour SF10.
 """
 from __future__ import annotations
 
+import hashlib
 import math
-import secrets
+import os
+import struct
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import numpy as np
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from lora_propagation_sim import is_decodable, rssi_dbm, snr_db, time_on_air_ms
 
 LORA_PAYLOAD_BYTES = 20  # trame binaire compacte chiffrée (cf. docstring)
+# Clé réseau racine — secret via env (jamais hardcodé en prod, cf. PKI_SPEC.md).
+# La valeur par défaut n'existe que pour la simulation hors infra.
+LORA_NETWORK_KEY = os.environ.get("LORA_NETWORK_KEY", "sim-dev-only-network-key")
 DEFAULT_GATEWAY_ID = "GW-ESP-DAKAR-001"
 DEFAULT_GATEWAY_LAT = 14.6934
 DEFAULT_GATEWAY_LON = -17.4678
@@ -35,6 +43,81 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     d_lambda = math.radians(lon2 - lon1)
     a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
     return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(a))
+
+
+# ============================================================================
+# Trame binaire + chiffrement AES-128-CTR (style LoRaWAN)
+# ============================================================================
+_FRAME_FMT = "<IHHHhHHHBB"  # 20 octets — voir build_frame
+assert struct.calcsize(_FRAME_FMT) == LORA_PAYLOAD_BYTES
+
+
+def derive_session_key(node_id: str) -> bytes:
+    """Clé de session AES-128 par nœud (AppSKey simulée) : dérivée de la clé
+    réseau + identifiant du nœud (SHA-256 tronqué à 16 octets). En production
+    réelle, la clé viendrait du join LoRaWAN (OTAA) / de Vault."""
+    return hashlib.sha256(f"{LORA_NETWORK_KEY}:{node_id}".encode()).digest()[:16]
+
+
+def _dev_addr(node_id: str) -> int:
+    """DevAddr 32 bits stable dérivé de l'identifiant du nœud."""
+    return int.from_bytes(hashlib.sha256(node_id.encode()).digest()[:4], "little")
+
+
+def _ctr_nonce(dev_addr: int, seq: int) -> bytes:
+    """Bloc compteur initial (16 octets) façon LoRaWAN A_i :
+    0x01 | 4×0x00 | dir=0 (uplink) | DevAddr (4o) | FCnt (4o) | 0x00 | i=1."""
+    return struct.pack("<B4sBIIBB", 0x01, b"\x00" * 4, 0x00, dev_addr, seq & 0xFFFFFFFF, 0x00, 0x01)
+
+
+def build_frame(dev_addr: int, seq: int, measurements: dict | None = None) -> bytes:
+    """Trame uplink 20 octets : DevAddr(4) FCnt(2) pm25×10(2) pm10×10(2)
+    temp×10(2, signé) hum×10(2) press-900hPa×10(2) no2_ppb(2) batt%(1) flags(1)."""
+    m = measurements or {}
+    clamp = lambda v, lo, hi: max(lo, min(hi, v))
+    return struct.pack(
+        _FRAME_FMT,
+        dev_addr,
+        seq & 0xFFFF,
+        clamp(int(round(m.get("pm2_5", 0.0) * 10)), 0, 65535),
+        clamp(int(round(m.get("pm10", 0.0) * 10)), 0, 65535),
+        clamp(int(round(m.get("temperature_c", 0.0) * 10)), -32768, 32767),
+        clamp(int(round(m.get("humidity_pct", 0.0) * 10)), 0, 65535),
+        clamp(int(round((m.get("pressure_hpa", 1013.0) - 900.0) * 10)), 0, 65535),
+        clamp(int(round(m.get("no2_ppb", 0.0))), 0, 65535),
+        clamp(int(round(m.get("battery_pct", 100))), 0, 255),
+        0x01,  # flags : bit0 = trame applicative valide
+    )
+
+
+def encrypt_payload(node_id: str, seq: int, frame: bytes) -> bytes:
+    """Chiffre la trame en AES-128-CTR avec la clé de session du nœud.
+    Le nonce dérive de (DevAddr, FCnt) — jamais réutilisé tant que seq croît,
+    condition de sûreté du mode CTR (cf. LoRaWAN §4.3.3)."""
+    cipher = Cipher(algorithms.AES(derive_session_key(node_id)),
+                    modes.CTR(_ctr_nonce(_dev_addr(node_id), seq)))
+    enc = cipher.encryptor()
+    return enc.update(frame) + enc.finalize()
+
+
+def decrypt_payload(node_id: str, seq: int, ciphertext: bytes) -> dict:
+    """Déchiffre et décode une trame côté gateway. Retourne les mesures en
+    unités physiques. Lève ValueError si le DevAddr décodé ne correspond pas
+    au nœud (clé erronée ou trame corrompue)."""
+    cipher = Cipher(algorithms.AES(derive_session_key(node_id)),
+                    modes.CTR(_ctr_nonce(_dev_addr(node_id), seq)))
+    dec = cipher.decryptor()
+    frame = dec.update(ciphertext) + dec.finalize()
+    (dev_addr, fcnt, pm25, pm10, temp, hum, press, no2, batt, flags) = struct.unpack(_FRAME_FMT, frame)
+    if dev_addr != _dev_addr(node_id):
+        raise ValueError(f"DevAddr mismatch pour {node_id} — clé ou trame invalide")
+    return {
+        "dev_addr": dev_addr, "fcnt": fcnt,
+        "pm2_5": pm25 / 10.0, "pm10": pm10 / 10.0,
+        "temperature_c": temp / 10.0, "humidity_pct": hum / 10.0,
+        "pressure_hpa": 900.0 + press / 10.0, "no2_ppb": float(no2),
+        "battery_pct": batt, "flags": flags,
+    }
 
 
 @dataclass
@@ -67,10 +150,13 @@ class LoRaNetworkSimulator:
     def distance_to_gateway_km(self, node: LoRaNode) -> float:
         return _haversine_km(node.lat, node.lon, self.gateway_lat, self.gateway_lon)
 
-    def transmit(self, node: LoRaNode, now: datetime | None = None) -> dict | None:
+    def transmit(self, node: LoRaNode, now: datetime | None = None,
+                 measurements: dict | None = None) -> dict | None:
         """Simule l'émission d'un paquet par `node`. Retourne le paquet reçu
         au format §9.3, ou None si le signal n'est pas décodable (paquet perdu
-        — hors de portée pour le SF configuré)."""
+        — hors de portée pour le SF configuré). `measurements` (optionnel, mêmes
+        clés que le payload MQTT simulé) est encodé en trame binaire puis chiffré
+        AES-128-CTR — `payload_hex` est donc déchiffrable via decrypt_payload()."""
         now = now or datetime.now(timezone.utc)
         node.seq += 1
 
@@ -87,7 +173,10 @@ class LoRaNetworkSimulator:
             "rssi_dbm": round(rssi, 0),
             "snr_db": snr_db(rssi, node.sf, rng=self._rng),
             "time_on_air_ms": time_on_air_ms(LORA_PAYLOAD_BYTES, node.sf),
-            "payload_hex": secrets.token_hex(LORA_PAYLOAD_BYTES),
+            "payload_hex": encrypt_payload(
+                node.node_id, node.seq,
+                build_frame(_dev_addr(node.node_id), node.seq, measurements),
+            ).hex(),
             "gateway_id": self.gateway_id,
             "gateway_lat": self.gateway_lat,
             "gateway_lon": self.gateway_lon,
@@ -147,3 +236,14 @@ if __name__ == "__main__":
               f"ToA={packet['time_on_air_ms']} ms)")
     n_lost = len(demo_nodes) - len(sim.transmit_all())
     print(f"\n{n_lost} paquet(s) perdu(s) (hors de portée pour le SF configuré)")
+
+    # Aller-retour chiffrement : émission avec mesures → déchiffrement gateway
+    demo_measures = {"pm2_5": 18.4, "pm10": 31.2, "temperature_c": 28.3,
+                     "humidity_pct": 65.1, "pressure_hpa": 1013.4,
+                     "no2_ppb": 38.5, "battery_pct": 78}
+    packet = sim.transmit(demo_nodes[0], measurements=demo_measures)
+    if packet:
+        decoded = decrypt_payload(packet["node_id"], packet["seq"],
+                                  bytes.fromhex(packet["payload_hex"]))
+        print(f"\nAES-128-CTR round-trip OK : pm2_5={decoded['pm2_5']} µg/m³, "
+              f"batt={decoded['battery_pct']}%, fcnt={decoded['fcnt']}")

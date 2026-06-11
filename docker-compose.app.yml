@@ -1,0 +1,68 @@
+# ============================================================================
+# Couche applicative — Backend FastAPI + Frontend React (Nginx)
+#
+# Dépend de l'infra de base. Démarrage complet :
+#
+#   docker compose -f docker-compose.infra.yml up -d
+#   docker compose -f docker-compose.infra.yml -f docker-compose.pipeline.yml up -d
+#   docker compose -f docker-compose.infra.yml -f docker-compose.app.yml up -d
+#
+#   API     → http://localhost:8000  (Swagger : /docs)
+#   Frontend → http://localhost:3000
+# ============================================================================
+
+services:
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: dakar-backend:latest
+    container_name: dakar-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-dakar_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requis}
+      POSTGRES_DB: ${POSTGRES_DB:-dakar_pollution}
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_ADMIN_TOKEN:?INFLUXDB_ADMIN_TOKEN requis}
+      INFLUXDB_ORG: ${INFLUXDB_ORG:-dakar_pollution}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD requis}@redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET requis — voir .env.example}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      BACKEND_SEED_DEMO_USERS: ${BACKEND_SEED_DEMO_USERS:-true}
+    ports:
+      - "8000:8000"
+    networks: [dakar-net]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: dakar-frontend:latest
+    container_name: dakar-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [dakar-net]
+
+networks:
+  dakar-net:
+    external: true        # réseau créé par docker-compose.infra.yml

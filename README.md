@@ -43,6 +43,32 @@ Le script fait tout automatiquement :
 
 ---
 
+## Couche applicative (API + Dashboard)
+
+```bash
+# Backend FastAPI (port 8000, Swagger sur /docs) + Frontend React (port 3000)
+docker compose -f docker-compose.infra.yml -f docker-compose.app.yml up -d --build
+```
+
+- **API** : `http://localhost:8000` — 11 endpoints (IQA, capteurs, prédictions,
+  kriging, alertes, signalements, export, admin). Spec : `backend/API_SPEC.md` (PPP-md).
+- **Dashboard** : `http://localhost:3000` — carte Leaflet + heatmap kriging,
+  jauges IQA par zone, historique/prédictions, formulaire de signalement.
+- **Comptes démo** (si `BACKEND_SEED_DEMO_USERS=true`) :
+  `citizen@demo.dakar-pollution.sn` / `citizen-demo-2026` (idem researcher/admin).
+- **Dev frontend** : `cd frontend && npm install && npm run dev` (proxy /api → :8000).
+- **Dev backend** : `cd backend && pip install -r requirements.txt && uvicorn app.main:app --reload`.
+
+## TLS MQTT (mTLS, S3.3)
+
+```bash
+# Génère la PKI (CA + serveur + clients) et active le listener 8883
+sh infra/mosquitto/certs/generate_certs.sh
+docker compose -f docker-compose.infra.yml restart mosquitto
+```
+
+---
+
 ## Architecture
 
 ```

@@ -21,3 +21,12 @@
 
 # Notes de session (jamais versionné)
 HANDOFF.md
+
+# PKI générée localement (generate_certs.sh) — jamais versionnée
+**/certs/clients/
+**/certs/*.srl
+infra/mosquitto/config/conf.d/*.conf
+
+# Frontend / backend builds locaux
+**/node_modules/
+**/dist/

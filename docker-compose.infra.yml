@@ -83,6 +83,27 @@ services:
       start_period: 15s
     networks: [dakar-net]
 
+  # ── Cache + blacklist JWT + sessions (backend FastAPI) ─────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: dakar-redis
+    restart: unless-stopped
+    # Mot de passe requis (moindre privilège) + persistance AOF légère
+    command: ["sh", "-c", "redis-server --requirepass \"$$REDIS_PASSWORD\" --appendonly yes"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD requis — voir .env.example}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    networks: [dakar-net]
+
   # ── Job one-shot : buckets manquants, tâches Flux planifiées, tokens scoped ─
   influxdb-init:
     image: influxdb:2.7
@@ -108,6 +129,7 @@ networks:
     driver: bridge
 
 volumes:
+  redis-data:
   postgres-data:
   influxdb-data:
   influxdb-config:

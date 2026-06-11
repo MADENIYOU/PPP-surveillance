@@ -233,7 +233,8 @@ def compute_zone_features(zone_id: str, pg_pool: PostgresPool,
 
     # ── F51-F54 : Spatiales ──────────────────────────────────────────────────
     feats["pm25_neighbor_mean"] = _influx_field_mean(influx_client, cleansed, meas, zone_id, "pm25", 1)
-    feats["pm25_upwind_mean"]   = None  # Calcul upwind = requête spatiale complexe, post-V1
+    feats["pm25_upwind_mean"]   = _fetch_upwind_pm25_mean(
+        pg_pool, influx_client, zone_id, feats.get("wind_direction"))
     feats["pm25_city_mean"]     = _fetch_city_pm25_mean(influx_client)
     feats["sensor_density"]     = _fetch_sensor_density(pg_pool, zone_id)
 
@@ -314,6 +315,54 @@ from(bucket: "{INFLUX_BUCKET_CLEANSED}")
   |> range(start: -1h)
   |> filter(fn: (r) => r._measurement == "air_quality_cleansed")
   |> filter(fn: (r) => r._field == "pm25")
+  |> mean()
+"""
+    return _influx_scalar(influx_client, flux)
+
+
+UPWIND_SECTOR_HALF_DEG = 45.0  # secteur ±45° autour de la direction d'origine du vent
+
+
+def _fetch_upwind_pm25_mean(pool: PostgresPool, influx_client, zone_id: str,
+                            wind_direction: Optional[float]) -> Optional[float]:
+    """F52 — moyenne PM2.5 (1h) des zones situées au vent de `zone_id`.
+
+    `wind_direction` est la direction météorologique (degrés, 0=Nord — d'où
+    VIENT le vent). Une zone candidate est "au vent" si l'azimut depuis le
+    centroïde de la zone courante vers son centroïde tombe dans le secteur
+    wind_direction ± 45°. L'azimut est calculé par PostGIS (ST_Azimuth) ;
+    la moyenne PM2.5 vient de bucket_cleansed sur la dernière heure."""
+    if wind_direction is None:
+        return None
+    with pool.cursor() as cur:
+        cur.execute("""
+            SELECT split_part(z2.path::text, '.', -1) AS zone_slug,
+                   degrees(ST_Azimuth(ST_Centroid(z1.geom), ST_Centroid(z2.geom))) AS azimuth
+            FROM zones z1
+            JOIN zones z2 ON z2.id <> z1.id AND z2.niveau = z1.niveau
+            WHERE z1.path ~ %s
+        """, (f"*.{zone_id}",))
+        rows = cur.fetchall()
+    upwind_slugs = []
+    for row in rows:
+        az = row.get("azimuth")
+        if az is None:
+            continue
+        # écart angulaire circulaire entre azimut et direction d'origine du vent
+        diff = abs((az - wind_direction + 180.0) % 360.0 - 180.0)
+        if diff <= UPWIND_SECTOR_HALF_DEG:
+            upwind_slugs.append(row["zone_slug"])
+    if not upwind_slugs:
+        return None
+    zone_filter = " or ".join(f'r.zone_id == "{s}"' for s in upwind_slugs)
+    flux = f"""
+from(bucket: "{INFLUX_BUCKET_CLEANSED}")
+  |> range(start: -1h)
+  |> filter(fn: (r) => r._measurement == "air_quality_cleansed")
+  |> filter(fn: (r) => {zone_filter})
+  |> filter(fn: (r) => r._field == "pm25")
+  |> mean()
+  |> group()
   |> mean()
 """
     return _influx_scalar(influx_client, flux)
