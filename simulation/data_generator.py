@@ -25,7 +25,7 @@ import logging
 import signal
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -45,6 +45,7 @@ DEFAULT_SENSORS_CONFIG = SIM_ROOT / "config" / "sensors.yaml"
 DEFAULT_ZONES_CONFIG = SIM_ROOT / "config" / "zones.yaml"
 GROUND_TRUTH_DIR = SIM_ROOT / "ground_truth"
 LOGS_DIR = SIM_ROOT / "logs"
+SPIFFS_DIR = SIM_ROOT / "spiffs"
 
 SENSOR_ID_PATTERN = r"^ESP32-DK-[A-Z]+-\d{3}$"
 
@@ -241,6 +242,9 @@ class SimulationRunner:
         # choix : fichier séparé `{run_id}_{date}_anomalies.csv` à côté du CSV principal).
         self._anomaly_log_path = self._gt_path.with_name(self._gt_path.stem + "_anomalies.csv")
         self._log_path = LOGS_DIR / f"generator_{datetime.now(timezone.utc):%Y%m%d}.jsonl"
+        self._next_broadcast: datetime | None = None
+
+        SPIFFS_DIR.mkdir(parents=True, exist_ok=True)
 
         self.stats = {
             "run_id": self.run_id,
@@ -351,6 +355,11 @@ class SimulationRunner:
         sensor.step_battery(now, self.interval)
         sensor.seq += 1
 
+        if sensor.seq % (60 // self.interval) == 0:
+            gateway_id = f"GW-DK-{sensor.zone_id.upper()}-001"
+            hb = json.dumps({"gateway_id": gateway_id, "time": _iso(now), "status": "online", "sim": True})
+            self.client.publish(f"dakar/gateway/{gateway_id}/heartbeat", hb, qos=0)
+
         confidence = 0.6 if warming_up else float(np.clip(0.95 - sensor.pms.calibration_age_days(now) / 400.0, 0.5, 0.99))
 
         # ── Injection d'anomalies (§4) — transforme les valeurs mesurées avant
@@ -370,6 +379,11 @@ class SimulationRunner:
                 measured, suppress_publish = self.injector.apply(active, now, measured)
                 anomaly_active = True
                 anomaly_type = active.type
+
+        if anomaly_active:
+            alert_payload = json.dumps({"sensor_id": sensor.sensor_id, "type": anomaly_type,
+                                         "time": _iso(now), "sim": True})
+            self.client.publish(f"dakar/sensors/{sensor.sensor_id}/alert", alert_payload, qos=2)
 
         measurements = Measurements(
             pm1_0=round(measured["pm1_0"], 1), pm2_5=round(measured["pm2_5"], 1), pm10=round(measured["pm10"], 1),
@@ -435,6 +449,12 @@ class SimulationRunner:
                     break
 
                 now = datetime.now(timezone.utc)
+                if self._next_broadcast is None or now >= self._next_broadcast:
+                    broadcast_payload = json.dumps({"time": _iso(now), "run_id": self.run_id,
+                                                     "n_sensors": len(self.sensors),
+                                                     "anomalies_active": self.injector.active_count if self.injector else 0})
+                    self.client.publish("dakar/system/broadcast", broadcast_payload, qos=1)
+                    self._next_broadcast = now + timedelta(minutes=5)
                 snapshot = []
                 for sensor in self.sensors:
                     t0 = time.monotonic()

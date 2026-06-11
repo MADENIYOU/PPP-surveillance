@@ -1,13 +1,13 @@
 """RBAC — contrôle de rôle par dépendance (API_SPEC.md §2.3).
 
-Hiérarchie : citizen < researcher < admin."""
+Hiérarchie : citizen(1) < researcher(2) < analyst(3) < operator(4) < admin(5) < super_admin(6)."""
 from __future__ import annotations
 
 from fastapi import Depends, HTTPException
 
 from app.security.jwt import get_current_user
 
-ROLE_LEVELS = {"citizen": 1, "researcher": 2, "admin": 3}
+ROLE_LEVELS = {"citizen": 1, "researcher": 2, "analyst": 3, "operator": 4, "admin": 5, "super_admin": 6}
 
 
 def require_role(min_role: str):

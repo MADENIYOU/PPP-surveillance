@@ -10,6 +10,7 @@ import bcrypt
 
 from app.config import get_settings
 from app.db import postgres
+from app.utils.encryption import encrypt_deterministic, get_settings as enc_settings
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +31,17 @@ def seed_demo_users() -> int:
             INSERT INTO citizens (pseudonyme) VALUES ('demo_citizen')
             ON CONFLICT (pseudonyme) DO NOTHING
         """)
+        enc_enabled = bool(enc_settings().encryption_key)
         for email, role, pwd_attr in DEMO_USERS:
             pwd_hash = bcrypt.hashpw(getattr(s, pwd_attr).encode(), bcrypt.gensalt()).decode()
+            stored_email = encrypt_deterministic(email) if enc_enabled else email
             cur.execute("""
                 INSERT INTO users (email, password_hash, role, zone_id, citizen_id)
                 VALUES (%s, %s, %s::user_role,
                         (SELECT id FROM zones WHERE path = 'dakar.medina'::ltree),
                         (SELECT id FROM citizens WHERE pseudonyme = 'demo_citizen'))
                 ON CONFLICT (email) DO NOTHING
-            """, (email, pwd_hash, role))
+            """, (stored_email, pwd_hash, role))
             n += cur.rowcount
     if n:
         logger.info("seed: %d compte(s) démo créé(s)", n)

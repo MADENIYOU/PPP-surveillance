@@ -51,6 +51,8 @@
 //   humidity      float    Humidité relative       (%)       [0.0 – 100.0]
 //   pressure      float    Pression atmosphérique  (hPa)     [800.0 – 1100.0]
 //   battery_level float    Niveau batterie         (%)       [0.0 – 100.0]
+//   battery_voltage V      Tension batterie         (V)       [0.0 – 5.0]
+//   panel_current A        Courant panneau solaire   (A)       [0.0 – 2.0]
 //   rssi          int      Puissance signal WiFi   (dBm)     [-120 – 0]
 //   uptime        int      Temps depuis reboot     (sec)     [0 – ∞]
 //   seq           int      Numéro de séquence      (uint16)  [0 – 65535]
@@ -836,6 +838,14 @@ from(bucket: "bucket_raw")
 //     |> filter(fn: (r) => r.pollutant == "pm25")
 //     |> filter(fn: (r) => r._field == "mean")
 //     |> aggregateWindow(every: 1mo, fn: mean, createEmpty: false)
+
+// ── V0 : Vérifier les champs battery_voltage et panel_current ────────────────
+// (added per SIMULATION_SPEC §5.1)
+//
+// from(bucket: "bucket_raw")
+//   |> range(start: -1h)
+//   |> filter(fn: (r) => r._field == "battery_voltage" or r._field == "panel_current")
+//   |> limit(n: 1)
 
 // ════════════════════════════════════════════════════════════════════════════
 // MODULE 8 : REQUÊTES DE VÉRIFICATION POST-DÉPLOIEMENT

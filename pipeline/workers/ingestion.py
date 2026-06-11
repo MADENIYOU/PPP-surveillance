@@ -15,12 +15,13 @@ Conçu sur le même principe d'injection de dépendances que les modules de
 """
 from __future__ import annotations
 
+import functools
 import json
-import logging
 import os
 import queue
 import random
 import signal
+import structlog
 import sys
 import threading
 import time
@@ -35,6 +36,8 @@ from pydantic import ValidationError
 PIPELINE_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PIPELINE_ROOT))
 
+from circuit_breaker import mqtt_breaker  # noqa: E402
+
 from db.influxdb_client import (  # noqa: E402
     InfluxBatchWriter,
     build_raw_point,
@@ -43,7 +46,21 @@ from db.influxdb_client import (  # noqa: E402
 from db.postgres_client import PostgresPool, ZoneResolver, mark_inactive_sensors, touch_sensor  # noqa: E402
 from models.pydantic_schemas import SensorPayload  # noqa: E402
 
-LOGGER = logging.getLogger("ingestion")
+# Prometheus metrics (exposed on port 8001 via a simple HTTP server thread)
+try:
+    from prometheus_client import Counter, Gauge, Histogram, start_http_server
+    HAS_PROMETHEUS = True
+    PROM_MESSAGES = Counter("ingestion_messages_total", "Total messages received")
+    PROM_DUPLICATES = Counter("ingestion_duplicate_total", "Duplicate messages discarded")
+    PROM_VALIDATION_ERRORS = Counter("ingestion_validation_errors_total", "Pydantic validation errors")
+    PROM_JSON_PARSE_ERRORS = Counter("ingestion_json_parse_errors_total", "JSON parse errors")
+    PROM_DEAD_LETTER = Counter("ingestion_dead_letter_total", "Dead letter records written")
+    PROM_POINTS_WRITTEN = Counter("ingestion_points_written_total", "InfluxDB points flushed")
+    PROM_BATCHES = Counter("ingestion_batches_total", "InfluxDB batch flushes")
+except ImportError:
+    HAS_PROMETHEUS = False
+
+LOGGER = structlog.get_logger("ingestion")
 
 MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
@@ -97,6 +114,42 @@ class DeadLetterWriter:
         with self._lock:
             with self._path.open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
+
+
+# ============================================================================
+# Circuit breaker pour appels externes (MQTT, InfluxDB, PostgreSQL)
+# ============================================================================
+class CircuitBreaker:
+    """Simple circuit breaker — évite les appels répétés à un service défaillant."""
+
+    def __init__(self, failure_threshold: int = 5, recovery_timeout_s: float = 60.0):
+        self._failure_threshold = failure_threshold
+        self._recovery_timeout_s = recovery_timeout_s
+        self._failures = 0
+        self._last_failure = 0.0
+        self._state = "closed"  # closed → open → half-open → closed
+
+    def __call__(self, func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            if self._state == "open":
+                if time.monotonic() - self._last_failure > self._recovery_timeout_s:
+                    self._state = "half-open"
+                else:
+                    raise RuntimeError(f"CircuitBreaker open for {func.__name__}")
+            try:
+                result = func(*args, **kwargs)
+                if self._state == "half-open":
+                    self._state = "closed"
+                    self._failures = 0
+                return result
+            except Exception:
+                self._failures += 1
+                self._last_failure = time.monotonic()
+                if self._failures >= self._failure_threshold:
+                    self._state = "open"
+                raise
+        return wrapper
 
 
 # ============================================================================
@@ -159,6 +212,8 @@ class IngestionWorker:
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             self._reject(msg.payload, "json_parse_error", str(exc), msg.topic)
             self.json_parse_error_total += 1
+            if HAS_PROMETHEUS:
+                PROM_JSON_PARSE_ERRORS.inc()
             return
 
         # 2. Validation Pydantic (§2.2 point 2)
@@ -167,6 +222,8 @@ class IngestionWorker:
         except ValidationError as exc:
             self._reject(raw, "validation_error", str(exc), msg.topic)
             self.validation_error_total += 1
+            if HAS_PROMETHEUS:
+                PROM_VALIDATION_ERRORS.inc()
             return
 
         # 3. Déduplication par seq (§2.2 point 3)
@@ -177,6 +234,8 @@ class IngestionWorker:
             if last_seq is not None and last_seq >= seq:
                 LOGGER.debug("duplicate_seq sensor_id=%s seq=%s", sensor_id, seq)
                 self.duplicate_total += 1
+                if HAS_PROMETHEUS:
+                    PROM_DUPLICATES.inc()
                 return
             self._seq_cache[sensor_id] = seq
 
@@ -200,11 +259,16 @@ class IngestionWorker:
         # 9. Métriques (§2.2 point 9)
         latency_ms = (time.time() - t_received) * 1000
         self.messages_total += 1
+        inc_counter("dakar_messages_ingested_total", 1)
+        if HAS_PROMETHEUS:
+            PROM_MESSAGES.inc()
         LOGGER.debug("message_ingested sensor_id=%s seq=%s latency_ms=%.1f", sensor_id, seq, latency_ms)
 
     def _reject(self, raw_payload, error: str, details: str, topic: str) -> None:
         self.dead_letter.write(raw_payload, error, details, topic, now=self.clock_fn())
         self.dead_letter_total += 1
+        if HAS_PROMETHEUS:
+            PROM_DEAD_LETTER.inc()
         self._record_dead_letter()
 
     def _record_dead_letter(self) -> None:
@@ -267,7 +331,8 @@ class IngestionWorker:
     def _connect_with_retry(self) -> None:
         for attempt in range(MAX_RETRIES):
             try:
-                self._client.connect(self.broker, self.port, keepalive=60)
+                with mqtt_breaker:
+                    self._client.connect(self.broker, self.port, keepalive=60)
                 return
             except (ConnectionError, OSError) as exc:
                 delay = min(BASE_DELAY_S * (2 ** attempt) + random.uniform(0, 1), MAX_DELAY_S)
@@ -328,7 +393,21 @@ def build_worker(dead_letter_path: Path = DEFAULT_DEAD_LETTER_FILE) -> Ingestion
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+    )
+
+    from metrics import start_metrics_server
+    metrics_server = start_metrics_server()
 
     worker = build_worker()
     try:

@@ -18,8 +18,8 @@ descend automatiquement d'un niveau de fallback, avec log INFO (pas d'exception)
 from __future__ import annotations
 
 import json
-import logging
 import os
+import structlog
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -44,7 +44,7 @@ except ImportError:
         return _d
 
     def get_run_logger():
-        return logging.getLogger("predictions")
+        return structlog.get_logger("predictions")
 
 
 from db.postgres_client import PostgresPool  # noqa: E402
@@ -54,7 +54,7 @@ try:
 except ImportError:
     pass
 
-LOGGER = logging.getLogger("predictions")
+LOGGER = structlog.get_logger("predictions")
 
 MODELS_DIR = PIPELINE_ROOT / "models"
 LSTM_FULL_PATH  = MODELS_DIR / "lstm_full.pt"
@@ -145,7 +145,11 @@ def _lstm_prediction(pool: PostgresPool, zone_int_id: int, model_int_id: int,
         return _prophet_prediction(pool, zone_int_id, model_int_id)
     try:
         import torch, joblib, numpy as np
-        model = torch.load(model_path, weights_only=False)
+        from models_def import safe_load_model
+        n_feat = len(df.columns) if df is not None else 57
+        model = safe_load_model(model_path, model_tag, n_features=n_feat)
+        if model is None:
+            return _prophet_prediction(pool, zone_int_id, model_int_id)
         model.eval()
         scaler = joblib.load(SCALER_PATH)
         cols_path = FEATURE_COLS_PATH
@@ -223,6 +227,7 @@ def _write_prediction(pool: PostgresPool, pred: dict, ts: datetime, horizon_key:
               (model_id, zone_id, pollutant, predicted_value, ci_lower, ci_upper,
                target_timestamp, horizon_minutes)
             VALUES (%s, %s, 'pm25', %s, %s, %s, %s, %s)
+            ON CONFLICT DO NOTHING
         """, (model_int_id, zone_int_id, val, ci_l, ci_u, target_ts, horizon_min))
 
 
@@ -320,6 +325,17 @@ def _iso(dt: datetime) -> str:
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+    )
     result = run_predictions()
     print("predictions result:", result)

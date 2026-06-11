@@ -7,6 +7,7 @@
 // l'horaire documenté dans CHOIX_TECHNIQUES.md / PIPELINE_SPEC.md : "45 0 * * *").
 
 import "math"
+import "strings"
 
 option task = {
     name: "compute_iqa_daily",
@@ -162,7 +163,25 @@ iqaGlobal = allSubIndices
             else "hazardous",
     }))
 
+// Polluant dominant : celui dont le sous-indice est le plus élevé.
+// On trie les sous-indices par valeur décroissante, on prend le 1er, puis
+// on mappe le nom du champ vers le nom du polluant.
+dominantPollutant = allSubIndices
+    |> group(columns: ["zone_id"])
+    |> sort(columns: ["_value"], desc: true)
+    |> first()
+    |> map(fn: (r) => ({
+        r with
+        _field: "dominant_pollutant",
+        _value: if strings.containsStr(v: r._field, substr: "pm25") then "pm25"
+                else if strings.containsStr(v: r._field, substr: "pm10") then "pm10"
+                else if strings.containsStr(v: r._field, substr: "no2")  then "no2"
+                else if strings.containsStr(v: r._field, substr: "o3")   then "o3"
+                else if strings.containsStr(v: r._field, substr: "co")   then "co"
+                else "unknown",
+    }))
+
 // ── Écriture IQA dans bucket_downsampled ─────────────────────────────────────
-union(tables: [iqaGlobal, pm25IQA, pm10IQA, no2IQA, o3IQA, coIQA])
+union(tables: [iqaGlobal, dominantPollutant, pm25IQA, pm10IQA, no2IQA, o3IQA, coIQA])
     |> set(key: "_measurement", value: "iqa_daily")
     |> to(bucket: "bucket_downsampled")

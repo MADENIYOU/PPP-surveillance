@@ -18,13 +18,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.config import get_settings
 from app.middleware.audit_logging import AuditLoggingMiddleware
 from app.middleware.request_id import RequestIdMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
-from app.routers import admin, alerts, aqi, auth, export, map as map_router, predictions, reports, sensors
+from app.routers import admin, alerts, aqi, auth, export, map as map_router, pipeline, predictions, reports, sensors
 from app.security.rate_limit import limiter
 
 logging.basicConfig(level=logging.INFO,
@@ -51,6 +52,7 @@ app = FastAPI(
 
 settings = get_settings()
 app.state.limiter = limiter
+app.add_exception_handler(429, _rate_limit_exceeded_handler)
 
 # Ordre : le dernier middleware ajouté s'exécute en premier (CORS en tête).
 app.add_middleware(AuditLoggingMiddleware)
@@ -117,5 +119,5 @@ def health():
 
 for r in (auth.router, aqi.router, sensors.router, reports.router,
           predictions.router, map_router.router, alerts.router,
-          export.router, admin.router):
+          export.router, admin.router, pipeline.router):
     app.include_router(r)

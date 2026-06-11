@@ -22,9 +22,9 @@ les features None avant l'inférence LSTM (§6.2 FEATURE_ENGINEERING_SPEC).
 from __future__ import annotations
 
 import json
-import logging
 import math
 import os
+import structlog
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -50,13 +50,13 @@ except ImportError:
         return _d
 
     def get_run_logger():
-        return logging.getLogger("feature_engineering")
+        return structlog.get_logger("feature_engineering")
 
 
 from db.influxdb_client import get_influxdb_client, INFLUX_BUCKET_CLEANSED, INFLUX_ORG  # noqa: E402
 from db.postgres_client import PostgresPool  # noqa: E402
 
-LOGGER = logging.getLogger("feature_engineering")
+LOGGER = structlog.get_logger("feature_engineering")
 
 # ─── Constantes Dakar ─────────────────────────────────────────────────────────
 RUSH_HOURS = {7, 8, 9, 17, 18, 19}          # §3.5 FEATURE_ENGINEERING_SPEC
@@ -148,9 +148,10 @@ def compute_zone_features(zone_id: str, pg_pool: PostgresPool,
     pm10_now = _influx_field_mean(influx_client, cleansed, meas, zone_id, "pm10", 1) or 0.0
     co_now   = _influx_field_mean(influx_client, cleansed, meas, zone_id, "co",   1) or 0.0
     no2_now  = _influx_field_mean(influx_client, cleansed, meas, zone_id, "no2",  1) or 0.0
+    o3_now   = _influx_field_mean(influx_client, cleansed, meas, zone_id, "o3",   1) or 0.0
 
     # ── F01-F11 : Lags ──────────────────────────────────────────────────────
-    for lag in [1, 3, 6, 12, 24, 48, 168]:
+    for lag in [1, 2, 3, 4, 6, 12, 24, 48, 168]:
         feats[f"pm25_lag_{lag}h"] = _influx_lag(influx_client, dnsamp, aq_h, zone_id, "pm25", lag) \
             if lag >= 1 else pm25_now
     feats["pm10_lag_1h"]  = _influx_lag(influx_client, dnsamp, aq_h, zone_id, "pm10",  1)
@@ -167,6 +168,14 @@ def compute_zone_features(zone_id: str, pg_pool: PostgresPool,
     feats["pm25_rolling_max_6h"]   = _influx_field_stat(influx_client, cleansed, meas, zone_id, "pm25", 6, "max")
     feats["pm25_rolling_p95_24h"]  = _influx_field_stat(influx_client, cleansed, meas, zone_id, "pm25", 24, "quantile(q: 0.95)")
     feats["pm10_rolling_mean_6h"]  = _influx_field_mean(influx_client, cleansed, meas, zone_id, "pm10", 6)
+    feats["pm25_rolling_mean_1h"]  = _influx_field_mean(influx_client, cleansed, meas, zone_id, "pm25", 1)
+    feats["pm25_rolling_median_6h"] = _influx_field_stat(influx_client, cleansed, meas, zone_id, "pm25", 6, "median")
+    feats["pm25_rolling_std_1h"]   = _influx_field_std( influx_client, cleansed, meas, zone_id, "pm25", 1)
+    feats["pm25_rolling_mean_12h"] = _influx_field_mean(influx_client, cleansed, meas, zone_id, "pm25", 12)
+    feats["pm10_rolling_mean_24h"] = _influx_field_mean(influx_client, cleansed, meas, zone_id, "pm10", 24)
+    feats["pm10_rolling_mean_1h"]  = _influx_field_mean(influx_client, cleansed, meas, zone_id, "pm10", 1)
+    feats["pm25_rolling_min_1h"]   = _influx_field_stat(influx_client, cleansed, meas, zone_id, "pm25", 1, "min")
+    feats["pm25_rolling_max_1h"]   = _influx_field_stat(influx_client, cleansed, meas, zone_id, "pm25", 1, "max")
 
     # ── F22-F25 : Dérivées ───────────────────────────────────────────────────
     lag1  = feats.get("pm25_lag_1h")
@@ -174,6 +183,10 @@ def compute_zone_features(zone_id: str, pg_pool: PostgresPool,
     lag24 = feats.get("pm25_lag_24h")
     feats["pm25_delta_1h"]  = (pm25_now - lag1)  if lag1  is not None else None
     feats["pm25_delta_6h"]  = (pm25_now - lag6)  if lag6  is not None else None
+    lag12 = feats.get("pm25_lag_12h")
+    feats["pm25_delta_12h"] = (pm25_now - lag12) if lag12 is not None else None
+    lag3  = feats.get("pm25_lag_3h")
+    feats["pm25_delta_3h"]  = (pm25_now - lag3)  if lag3  is not None else None
     delta_1h = feats["pm25_delta_1h"]
     delta_t1 = (lag1 - lag6) if (lag1 is not None and lag6 is not None) else None
     feats["pm25_accel_1h"]  = (delta_1h - delta_t1) if (delta_1h is not None and delta_t1 is not None) else None
@@ -195,6 +208,9 @@ def compute_zone_features(zone_id: str, pg_pool: PostgresPool,
     feats["is_weekend"]   = 1 if dow >= 5 else 0
     feats["is_rush_hour"] = 1 if ts.hour in RUSH_HOURS else 0
     feats["is_night"]     = 1 if ts.hour in NIGHT_HOURS else 0
+    feats["is_morning"]        = 1 if 6 <= ts.hour <= 10 else 0
+    feats["is_evening"]        = 1 if 17 <= ts.hour <= 21 else 0
+    feats["is_business_hour"]  = 1 if 8 <= ts.hour <= 17 and dow < 5 else 0
 
     # ── F37-F44 : Météo (PostgreSQL external_weather) ────────────────────────
     weather = _fetch_weather(pg_pool, zone_id, ts)
@@ -230,6 +246,11 @@ def compute_zone_features(zone_id: str, pg_pool: PostgresPool,
     feats["pm25_pm10_ratio"] = (pm25_now / pm10_now) if pm10_now > 0 else None
     feats["pm25_co_ratio"]   = (pm25_now / co_now)   if co_now   > 0 else None
     feats["no2_co_ratio"]    = (no2_now  / co_now)   if co_now   > 0 else None
+    feats["pm25_no2_ratio"]  = (pm25_now / no2_now)  if no2_now  > 0 else None
+    feats["co_no2_ratio"]    = (co_now   / no2_now)  if no2_now  > 0 else None
+    feats["pm10_pm25_ratio"] = (pm10_now / pm25_now) if pm25_now > 0 else None
+    feats["pm10_co_ratio"]    = (pm10_now / co_now) if co_now > 0 else None
+    feats["no2_o3_ratio"]     = (no2_now / o3_now) if o3_now > 0 else None
 
     # ── F51-F54 : Spatiales ──────────────────────────────────────────────────
     feats["pm25_neighbor_mean"] = _influx_field_mean(influx_client, cleansed, meas, zone_id, "pm25", 1)
@@ -237,6 +258,17 @@ def compute_zone_features(zone_id: str, pg_pool: PostgresPool,
         pg_pool, influx_client, zone_id, feats.get("wind_direction"))
     feats["pm25_city_mean"]     = _fetch_city_pm25_mean(influx_client)
     feats["sensor_density"]     = _fetch_sensor_density(pg_pool, zone_id)
+    feats["pm25_downwind_mean"]  = _fetch_downwind_pm25_mean(
+        pg_pool, influx_client, zone_id, feats.get("wind_direction"))
+    upwind = feats.get("pm25_upwind_mean")
+    ws     = feats.get("wind_speed")
+    if pm25_now > 0 and upwind is not None and upwind > 0:
+        feats["wind_independence_index"] = abs(pm25_now - upwind) / max(pm25_now, upwind)
+    elif ws is not None and ws < 0.5:
+        feats["wind_independence_index"] = 1.0
+    else:
+        feats["wind_independence_index"] = None
+    feats["pm25_spatial_gradient"] = (pm25_now - feats.get("pm25_neighbor_mean", pm25_now)) / max(pm25_now, 1.0) if feats.get("pm25_neighbor_mean") is not None else None
 
     # ── F55-F57 : Capteur ────────────────────────────────────────────────────
     sensor_meta = _fetch_sensor_meta(pg_pool, zone_id, ts)
@@ -368,6 +400,15 @@ from(bucket: "{INFLUX_BUCKET_CLEANSED}")
     return _influx_scalar(influx_client, flux)
 
 
+def _fetch_downwind_pm25_mean(pool: PostgresPool, influx_client, zone_id: str,
+                               wind_direction: Optional[float]) -> Optional[float]:
+    """Downwind PM2.5 mean — same geometry as upwind but offset by 180°."""
+    if wind_direction is None:
+        return None
+    return _fetch_upwind_pm25_mean(pool, influx_client, zone_id,
+                                    (wind_direction + 180.0) % 360.0)
+
+
 def _fetch_sensor_density(pool: PostgresPool, zone_id: str) -> Optional[int]:
     zone_int = _zone_int(pool, zone_id)
     if zone_int is None:
@@ -481,6 +522,17 @@ def _iso(dt: datetime) -> str:
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+    )
     result = run_feature_engineering()
     print("feature_engineering result:", result)

@@ -100,8 +100,8 @@ class PMS5003Model:
             results[channel] = _clip_resolution(raw, params["resolution"])
 
         # Contrainte physique : PM1.0 ≤ PM2.5 ≤ PM10 (tolérance — on force si violée)
-        if results["pm10"] < results["pm2_5"] * 1.1:
-            results["pm10"] = results["pm2_5"] * 1.1
+        if results["pm10"] < results["pm2_5"] * 1.05:
+            results["pm10"] = results["pm2_5"] * 1.05
         if results["pm1_0"] > results["pm2_5"]:
             results["pm1_0"] = results["pm2_5"]
 

@@ -26,10 +26,12 @@ et qu'aucune alerte dupliquée n'a été émise dans les 30 dernières minutes (
 from __future__ import annotations
 
 import json
-import logging
 import os
+import select
 import signal
+import structlog
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,8 +42,9 @@ sys.path.insert(0, str(PIPELINE_ROOT))
 
 from db.influxdb_client import get_influxdb_client, query_cleansed_window  # noqa: E402
 from db.postgres_client import PostgresPool  # noqa: E402
+from metrics import inc_counter, set_gauge  # noqa: E402
 
-LOGGER = logging.getLogger("anomaly_detector")
+LOGGER = structlog.get_logger("anomaly_detector")
 
 DETECTOR_INTERVAL_S = int(os.environ.get("ANOMALY_DETECTOR_INTERVAL", "60"))
 STRUCTURAL_RULES_INTERVAL_S = 5 * 60
@@ -255,12 +258,54 @@ class AnomalyDetectorWorker:
         self._anomaly_count = 0
         self._alert_count = 0
 
+    def _listen_thread(self) -> None:
+        """Listen for PostgreSQL NOTIFY on air_quality_insert channel for real-time Level 1."""
+        try:
+            import psycopg2
+            conn = psycopg2.connect(
+                host=os.environ.get("POSTGRES_HOST", "localhost"),
+                port=int(os.environ.get("POSTGRES_PORT", "5432")),
+                dbname=os.environ.get("POSTGRES_DB", "dakar_pollution"),
+                user=os.environ.get("POSTGRES_USER", "dakar_admin"),
+                password=os.environ.get("POSTGRES_PASSWORD", ""),
+            )
+            conn.set_isolation_level(0)
+            cursor = conn.cursor()
+            cursor.execute("LISTEN air_quality_insert;")
+            LOGGER.info("anomaly_detector listening on air_quality_insert")
+
+            while not self._stop:
+                if select.select([conn], [], [], 5) == ([], [], []):
+                    continue
+                conn.poll()
+                while conn.notifies:
+                    notify = conn.notifies.pop(0)
+                    try:
+                        data = json.loads(notify.payload)
+                        findings = detect_level1_thresholds(
+                            str(data.get("sensor_id", "")),
+                            "unknown",
+                            data
+                        )
+                        sensor_id = str(data.get("sensor_id", ""))
+                        zone_int_id = int(data.get("zone_id", 1))
+                        ts_str = str(data.get("timestamp", ""))
+                        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else datetime.now(timezone.utc)
+                        for f in findings:
+                            self._persist(f, sensor_id, "unknown", zone_int_id, ts)
+                    except Exception:
+                        LOGGER.exception("notify_handler_error")
+        except Exception:
+            LOGGER.exception("listen_thread_error")
+
     def run(self) -> None:
         try:
             signal.signal(signal.SIGTERM, lambda *_: self._shutdown())
             signal.signal(signal.SIGINT, lambda *_: self._shutdown())
         except ValueError:
             pass
+        self._listen_t = threading.Thread(target=self._listen_thread, daemon=True)
+        self._listen_t.start()
         LOGGER.info("anomaly_detector_started interval_s=%d", DETECTOR_INTERVAL_S)
         while not self._stop:
             t_start = time.perf_counter()
@@ -313,6 +358,7 @@ class AnomalyDetectorWorker:
                 finding.get("score"), ts, finding["severity"],
             )
             self._anomaly_count += 1
+            inc_counter("dakar_anomalies_detected_total", 1, {"type": finding["type"]})
             LOGGER.info("anomaly_detected sensor=%s type=%s severity=%s pollutant=%s val=%.1f",
                         sensor_id, finding["type"], finding["severity"], finding["pollutant"], finding["detected_value"])
 
@@ -326,6 +372,7 @@ class AnomalyDetectorWorker:
                         message=finding["description"],
                     )
                     self._alert_count += 1
+                    inc_counter("dakar_alerts_generated_total", 1, {"severity": finding["severity"]})
                     LOGGER.info("alert_generated zone=%s type=anomaly gravite=%s", zone_slug, finding["severity"])
         except Exception:
             LOGGER.exception("anomaly_persist_failed sensor=%s finding=%s", sensor_id, finding.get("type"))
@@ -357,8 +404,21 @@ class AnomalyDetectorWorker:
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+    )
 
     from db.postgres_client import PostgresPool
     pool = PostgresPool()
+    from metrics import start_metrics_server
+    metrics_server = start_metrics_server()
     AnomalyDetectorWorker(pool).run()

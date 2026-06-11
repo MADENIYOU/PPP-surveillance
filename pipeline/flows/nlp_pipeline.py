@@ -20,9 +20,9 @@ classification par règles simples uniquement).
 """
 from __future__ import annotations
 
-import logging
 import os
 import re
+import structlog
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -44,11 +44,13 @@ except ImportError:
         def _d(fn): return fn
         return _d
     def get_run_logger():
-        return logging.getLogger("nlp_pipeline")
+        return structlog.get_logger("nlp_pipeline")
+
+from circuit_breaker import nlp_breaker  # noqa: E402
 
 from db.postgres_client import PostgresPool  # noqa: E402
 
-LOGGER = logging.getLogger("nlp_pipeline")
+LOGGER = structlog.get_logger("nlp_pipeline")
 
 # Mots-clés d'urgence haute (contexte dakarois §8.1)
 HIGH_URGENCY_KEYWORDS = [
@@ -220,7 +222,8 @@ def process_report(report: dict, pool: PostgresPool, nlp) -> dict:
     clean_text = preprocess_text(report["texte"])
 
     if nlp is not None:
-        doc = nlp(clean_text)
+        with nlp_breaker:
+            doc = nlp(clean_text)
         entities = extract_entities(doc)
         embedding = doc.vector.tolist()
     else:
@@ -272,6 +275,17 @@ def process_citizen_reports(report_ids: Optional[list[int]] = None):
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+    )
     result = process_citizen_reports()
     print("nlp_pipeline result:", result)

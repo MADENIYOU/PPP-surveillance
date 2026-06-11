@@ -17,9 +17,9 @@ L'état Kalman (x, P, Q, R) est persisté entre les redémarrages dans
 from __future__ import annotations
 
 import json
-import logging
 import os
 import signal
+import structlog
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -37,8 +37,9 @@ from db.influxdb_client import (  # noqa: E402
     query_raw_recent,
 )
 from db.postgres_client import PostgresPool  # noqa: E402
+from metrics import inc_counter, set_gauge  # noqa: E402
 
-LOGGER = logging.getLogger("calibration")
+LOGGER = structlog.get_logger("calibration")
 
 CALIBRATION_INTERVAL_S = int(os.environ.get("CALIBRATION_INTERVAL", "30"))
 LOOKBACK_S = int(os.environ.get("CALIBRATION_LOOKBACK_S", "60"))
@@ -234,6 +235,7 @@ class CalibrationWorker:
                     calibration_method=cal_method, kalman_gain=kalman_gain, row=row,
                 )
                 self._writer.add(point)
+                inc_counter("dakar_messages_calibrated_total", 1)
                 n_calibrated += 1
 
         if n_calibrated:
@@ -257,5 +259,18 @@ def _iso(dt: datetime) -> str:
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+    )
+    from metrics import start_metrics_server
+    metrics_server = start_metrics_server()
     CalibrationWorker().run()

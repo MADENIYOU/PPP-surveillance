@@ -184,7 +184,9 @@ def main():
     model_full = LSTMPollution(n_features=len(all_feat))
     metrics_full = train_model(model_full, Xf_tr, yf_tr, Xf_va, yf_va,
                                 args.epochs, args.batch_size, args.lr, "LSTM-full")
-    torch.save(model_full, MODELS_DIR / "lstm_full.pt")
+    torch.save(model_full.state_dict(), MODELS_DIR / "lstm_full.pt")
+    (MODELS_DIR / "lstm_full.pt.meta.json").write_text(
+        json.dumps({"model_tag": "lstm_full", "n_features": len(all_feat), "format": "state_dict"}))
     joblib.dump(scaler, MODELS_DIR / "feature_scaler.pkl")
     (MODELS_DIR / "feature_cols.json").write_text(json.dumps(all_feat))
     print(f"  LSTM-full   sauvegardé — val_RMSE={metrics_full['best_val_rmse']:.3f}")
@@ -194,7 +196,9 @@ def main():
     yl_tr, yl_va = ys_light[:split], ys_light[split:]
     metrics_light = train_model(model_light, Xl_tr, yl_tr, Xl_va, yl_va,
                                  args.epochs, args.batch_size, args.lr, "LSTM-light")
-    torch.save(model_light, MODELS_DIR / "lstm_light.pt")
+    torch.save(model_light.state_dict(), MODELS_DIR / "lstm_light.pt")
+    (MODELS_DIR / "lstm_light.pt.meta.json").write_text(
+        json.dumps({"model_tag": "lstm_light", "n_features": len(light_feat), "format": "state_dict"}))
     joblib.dump(scaler_light, MODELS_DIR / "feature_scaler_light.pkl")
     (MODELS_DIR / "feature_cols_light.json").write_text(json.dumps(light_feat))
     print(f"  LSTM-light  sauvegardé — val_RMSE={metrics_light['best_val_rmse']:.3f}")

@@ -48,6 +48,17 @@ class cursor:
         return False
 
 
+def pool_info() -> dict:
+    """Nombre de connexions actives sur la base courante."""
+    try:
+        with cursor() as cur:
+            cur.execute("SELECT count(*) AS cnt FROM pg_stat_activity WHERE datname = current_database()")
+            row = cur.fetchone()
+            return {"active_connections": row["cnt"] if row else 0}
+    except Exception:
+        return {"active_connections": 0}
+
+
 def zone_id_from_slug(slug: str) -> Optional[int]:
     with cursor() as cur:
         cur.execute("SELECT id FROM zones WHERE path ~ %s ORDER BY niveau DESC LIMIT 1",

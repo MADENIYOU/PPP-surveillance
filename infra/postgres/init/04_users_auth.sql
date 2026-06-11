@@ -14,7 +14,7 @@ END $$;
 
 CREATE TABLE IF NOT EXISTS users (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email           VARCHAR(254) NOT NULL,
+    email           VARCHAR(512) NOT NULL,
     password_hash   VARCHAR(128) NOT NULL,      -- bcrypt
     role            user_role NOT NULL DEFAULT 'citizen',
     zone_id         INT REFERENCES zones(id) ON DELETE SET NULL,
@@ -35,6 +35,18 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON users TO app_user;
 -- Comptes de démonstration : créés au démarrage du backend FastAPI si
 -- BACKEND_SEED_DEMO_USERS=true (hash bcrypt calculé à l'exécution — jamais de
 -- hash en dur dans un script versionné). Voir backend/app/db/seed.py.
+
+-- Ajout des colonnes MFA (TOTP) — idempotent
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled BOOLEAN DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_secret VARCHAR(64);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_last_used TIMESTAMPTZ;
+
+-- GDPR / RGPD compliance columns
+ALTER TABLE users ADD COLUMN IF NOT EXISTS data_consent BOOLEAN DEFAULT true;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_date TIMESTAMPTZ DEFAULT now();
+ALTER TABLE users ADD COLUMN IF NOT EXISTS data_retention_days INT DEFAULT 365;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS erasure_requested_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS erasure_completed_at TIMESTAMPTZ;
 
 DO $$ BEGIN
     RAISE NOTICE 'Migration 04 appliquée : table users.';

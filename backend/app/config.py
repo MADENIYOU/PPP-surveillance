@@ -38,9 +38,14 @@ class Settings(BaseSettings):
     jwt_public_key_path: str = ""
     jwt_access_ttl_s: int = 3600
     jwt_refresh_ttl_s: int = 30 * 24 * 3600
+    jwt_mfa_temp_ttl_s: int = 300  # 5 minutes to complete MFA verification
+    totp_issuer: str = "DakarPollution"
 
     # CORS — origines explicites, jamais "*" (API_SPEC §1.2)
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
+
+    # Encryption at rest (AES-256 via Fernet)
+    encryption_key: str = ""  # Set via ENCRYPTION_KEY env var to enable
 
     # Seed des comptes démo au démarrage (Phase 4 uniquement)
     backend_seed_demo_users: bool = False

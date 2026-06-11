@@ -97,6 +97,7 @@ def build_raw_point(payload: SensorPayload, zone_id: str, now: datetime | None =
         .field("humidity", m.humidity_pct)
         .field("pressure", m.pressure_hpa)
         .field("battery_level", float(payload.battery.level_pct))
+        .field("battery_voltage", payload.battery.voltage_v)
         .field("rssi", payload.network.rssi_dbm)
         .field("buffer_pending", payload.network.buffer_pending)
         .field("seq", payload.seq)

@@ -46,6 +46,7 @@ class SeasonalModel:
         if self.season_override is not None and self.season_override not in SEASONS:
             raise ValueError(f"Saison inconnue : {self.season_override!r} (attendu : {SEASONS})")
         self._rng = np.random.default_rng(self.seed)
+        self._last_rain_time: datetime | None = None
 
     def season_for(self, dt: datetime) -> str:
         if self.season_override is not None:
@@ -84,16 +85,20 @@ class SeasonalModel:
         bonus = 15.0 + (intensity - 0.5) / 0.5 * 35.0
         return True, bonus
 
-    def rain_reduction(self, dt: datetime, rained_recently: bool) -> float:
+    def mark_rain(self, dt: datetime) -> None:
+        self._last_rain_time = dt
+
+    def rain_reduction(self, dt: datetime) -> float:
         """Facteur multiplicatif lié à la saison des pluies (§3.3).
 
         - Lessivage atmosphérique structurel : ×0.70 pendant l'hivernage.
-        - Effet pluie immédiat (si `rained_recently`) : -30% supplémentaires.
+        - Effet pluie immédiat (2h après précipitation) : -30% supplémentaires.
         """
         if self.season_for(dt) != "rain":
             return 1.0
         factor = 0.70
-        if rained_recently:
+        rained = self._last_rain_time is not None and (dt - self._last_rain_time).total_seconds() < 7200
+        if rained:
             factor *= 0.70
         return factor
 
@@ -117,7 +122,7 @@ class DakarAtmosphericModel:
         self._profile = self.profile_params or {}
 
     # ── PM2.5 (§3.1) — modèle bimodal + harmattan + saisonnalité + hebdo ──────
-    def pm25_true(self, dt: datetime, rained_recently: bool = False) -> float:
+    def pm25_true(self, dt: datetime) -> float:
         h = dt.hour + dt.minute / 60.0
         zp = self.zone_params
 
@@ -139,7 +144,7 @@ class DakarAtmosphericModel:
             value *= (1.0 - sea_breeze)
 
         # Saisonnalité hivernage (§3.3)
-        value *= self.seasonal.rain_reduction(dt, rained_recently)
+        value *= self.seasonal.rain_reduction(dt)
 
         # Variabilité hebdomadaire (§3.2)
         value *= WEEKDAY_FACTORS[dt.weekday()]

@@ -55,7 +55,48 @@ GRANT SELECT ON kriging_results       TO readonly_user;
 GRANT USAGE, SELECT ON SEQUENCE data_quality_metrics_id_seq TO app_user;
 GRANT USAGE, SELECT ON SEQUENCE kriging_results_id_seq       TO app_user;
 
+-- ── pipeline_events ──────────────────────────────────────────────────────────
+-- Journal d'événements du pipeline pour le dashboard /pipeline/logs.
+-- Alimenté par les workers (INSERT) et triggers (NOTIFY → worker logging).
+
+CREATE TABLE IF NOT EXISTS pipeline_events (
+    id          BIGSERIAL PRIMARY KEY,
+    service     VARCHAR(32) NOT NULL,
+    level       VARCHAR(8) NOT NULL DEFAULT 'INFO',
+    message     TEXT NOT NULL,
+    metadata    JSONB DEFAULT '{}',
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_events_service ON pipeline_events(service, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pipeline_events_level ON pipeline_events(level, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pipeline_events_created ON pipeline_events(created_at DESC);
+
+COMMENT ON TABLE pipeline_events IS
+    'Journal unifié des événements pipeline (ingestion, calibration, anomaly_detector, flows...)';
+COMMENT ON COLUMN pipeline_events.service IS
+    'Nom du worker/flow : ingestion, calibration, anomaly_detector, feature_engineering, etc.';
+
+-- ── Colonne resolved_at sur alerts ───────────────────────────────────────────
+-- Ajoutée pour supporter les endpoints /pipeline/alerts/{id}/resolve
+
+DO $$ BEGIN
+    ALTER TABLE alerts ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE alerts ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+-- ── Droits sur les nouveaux objets ───────────────────────────────────────────
+GRANT SELECT, INSERT, UPDATE, DELETE ON pipeline_events TO app_user;
+GRANT SELECT ON pipeline_events TO readonly_user;
+GRANT USAGE, SELECT ON SEQUENCE pipeline_events_id_seq TO app_user;
+GRANT UPDATE (resolved_at, acknowledged_at) ON alerts TO app_user;
+
 DO $$
 BEGIN
-    RAISE NOTICE 'Migration 02 appliquée : tables data_quality_metrics et kriging_results créées.';
+    RAISE NOTICE 'Migration 02 appliquée : tables data_quality_metrics, kriging_results, pipeline_events créées.';
 END $$;

@@ -14,6 +14,7 @@ CREATE EXTENSION IF NOT EXISTS ltree;
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS pg_trgm;          -- pour recherche texte fuzzy
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- TYPES ENUM
@@ -138,6 +139,40 @@ CREATE INDEX idx_sensors_metadata ON sensors USING GIN (metadata);
 COMMENT ON TABLE sensors IS 'Inventaire des noeuds IoT (capteurs physiques)';
 COMMENT ON COLUMN sensors.serial_number IS 'Identifiant unique matériel (ex: ESP32_042)';
 COMMENT ON COLUMN sensors.metadata IS 'Extensible: MAC, date_derniere_maintenance, notes';
+
+-- air_quality (mesures brutes réceptionnées par le worker d'ingestion)
+-- Cible du trigger NOTIFY pour le détecteur d'anomalies Niveau 1 temps réel.
+
+CREATE TABLE air_quality (
+    id              BIGSERIAL PRIMARY KEY,
+    sensor_id       INT NOT NULL REFERENCES sensors(id) ON DELETE CASCADE,
+    zone_id         INT NOT NULL REFERENCES zones(id) ON DELETE CASCADE,
+    pm25            DOUBLE PRECISION,
+    pm10            DOUBLE PRECISION,
+    pm1_0           DOUBLE PRECISION,
+    co              DOUBLE PRECISION,
+    no2             DOUBLE PRECISION,
+    o3              DOUBLE PRECISION,
+    temperature     DOUBLE PRECISION,
+    humidity        DOUBLE PRECISION,
+    pressure        DOUBLE PRECISION,
+    seq             INT NOT NULL DEFAULT 0 CHECK (seq >= 0),
+    firmware        VARCHAR(32),
+    battery_voltage DOUBLE PRECISION,
+    battery_level   DOUBLE PRECISION,
+    rssi            INT,
+    stale           BOOLEAN DEFAULT false,
+    metadata        JSONB DEFAULT '{}',
+    timestamp       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_air_quality_sensor_ts ON air_quality(sensor_id, timestamp DESC);
+CREATE INDEX idx_air_quality_zone_ts ON air_quality(zone_id, timestamp DESC);
+CREATE INDEX idx_air_quality_ts ON air_quality(timestamp DESC);
+
+COMMENT ON TABLE air_quality IS 'Mesures brutes des capteurs IoT — réceptionnées par le worker ingestion MQTT';
+COMMENT ON COLUMN air_quality.seq IS 'Numéro de séquence monotone du capteur (déduplication + détection de gaps)';
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- MODULE 2 : IA & MODELES
@@ -311,6 +346,11 @@ CREATE TABLE citizens (
 
     CONSTRAINT uq_citizens_pseudonyme UNIQUE (pseudonyme)
 );
+
+ALTER TABLE citizens ADD COLUMN IF NOT EXISTS data_consent BOOLEAN DEFAULT true;
+ALTER TABLE citizens ADD COLUMN IF NOT EXISTS consent_date TIMESTAMPTZ DEFAULT now();
+ALTER TABLE citizens ADD COLUMN IF NOT EXISTS erasure_requested_at TIMESTAMPTZ;
+ALTER TABLE citizens ADD COLUMN IF NOT EXISTS erasure_completed_at TIMESTAMPTZ;
 
 COMMENT ON TABLE citizens IS 'Utilisateurs anonymisés — identifiants JWT stockés côté auth, pas ici';
 COMMENT ON COLUMN citizens.score_confiance IS 'Qualité métier: signalements vérifiés / total';
@@ -986,6 +1026,97 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_user;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly_user;
 -- Interdire SELECT sur audit_logs et participants (données sensibles)
 REVOKE SELECT ON audit_logs, participants, health_logs FROM readonly_user;
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- RGPD : DROIT À L'EFFACEMENT (Right to Erasure)
+-- ════════════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION gdpr_erase_user(p_user_id UUID)
+RETURNS TABLE(action TEXT, affected_rows INT) AS $$
+DECLARE
+    citizen_id INT;
+BEGIN
+    -- Find linked citizen
+    SELECT u.citizen_id INTO citizen_id FROM users u WHERE u.id = p_user_id;
+
+    -- 1. Anonymize citizen profile
+    IF citizen_id IS NOT NULL THEN
+        UPDATE citizens SET
+            pseudonyme = 'anonyme_' || substr(gen_random_uuid()::text, 1, 8),
+            email_hash = NULL,
+            data_consent = false,
+            erasure_requested_at = now(),
+            erasure_completed_at = now()
+        WHERE id = citizen_id;
+        GET DIAGNOSTICS affected_rows = ROW_COUNT;
+        action := 'citizens_anonymized';
+        RETURN NEXT;
+    END IF;
+
+    -- 2. Anonymize reports (replace text, keep for aggregate stats)
+    UPDATE reports SET
+        texte = '[SUPPRIMÉ RGPD]',
+        metadata = jsonb_set(metadata, '{erased}', 'true'::jsonb)
+    WHERE citizen_id = citizen_id;
+    GET DIAGNOSTICS affected_rows = ROW_COUNT;
+    action := 'reports_anonymized';
+    RETURN NEXT;
+
+    -- 3. Revoke all tokens (they'll expire naturally; blacklist active ones)
+    -- Token revocation handled at application level via Redis blacklist
+
+    -- 4. Anonymize user account
+    UPDATE users SET
+        email = 'erased_' || substr(gen_random_uuid()::text, 1, 16) || '@erased.dakar-pollution.sn',
+        password_hash = '',
+        is_active = false,
+        data_consent = false,
+        erasure_requested_at = COALESCE(erasure_requested_at, now()),
+        erasure_completed_at = now(),
+        zone_id = NULL,
+        citizen_id = NULL
+    WHERE id = p_user_id;
+    GET DIAGNOSTICS affected_rows = ROW_COUNT;
+    action := 'users_anonymized';
+    RETURN NEXT;
+
+    -- 5. Audit log
+    INSERT INTO audit_logs (user_id, action, resource, resource_id, details, status)
+    VALUES (NULL, 'DELETE', 'users', NULL,
+            jsonb_build_object('erased_user_id', p_user_id, 'gdpr', true, 'reason', 'right_to_erasure'),
+            'success');
+    GET DIAGNOSTICS affected_rows = ROW_COUNT;
+    action := 'audit_logged';
+    RETURN NEXT;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+COMMENT ON FUNCTION gdpr_erase_user IS 'Droit à l''effacement RGPD : anonymise toutes les données personnelles d''un utilisateur';
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- TRIGGER NOTIFY POUR LE DÉTECTEUR D'ANOMALIES (Niveau 1 temps réel)
+-- ════════════════════════════════════════════════════════════════════════════
+CREATE OR REPLACE FUNCTION notify_air_quality_insert()
+RETURNS TRIGGER AS $$
+BEGIN
+    PERFORM pg_notify('air_quality_insert', json_build_object(
+        'zone_id', NEW.zone_id,
+        'pm25', NEW.pm25,
+        'pm10', NEW.pm10,
+        'co', NEW.co,
+        'no2', NEW.no2,
+        'sensor_id', NEW.sensor_id,
+        'timestamp', NEW.timestamp
+    )::text);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_air_quality_notify ON air_quality;
+CREATE TRIGGER trg_air_quality_notify
+    AFTER INSERT ON air_quality
+    FOR EACH ROW
+    EXECUTE FUNCTION notify_air_quality_insert();
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- COMMENTAIRES FINAUX

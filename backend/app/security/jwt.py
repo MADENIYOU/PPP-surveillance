@@ -19,7 +19,12 @@ def create_token(user_id: str, role: str, zone_id: Optional[str],
                  token_type: str = "access") -> str:
     s = get_settings()
     now = datetime.now(timezone.utc)
-    ttl = s.jwt_access_ttl_s if token_type == "access" else s.jwt_refresh_ttl_s
+    if token_type == "access":
+        ttl = s.jwt_access_ttl_s
+    elif token_type == "mfa_temp":
+        ttl = s.jwt_mfa_temp_ttl_s
+    else:
+        ttl = s.jwt_refresh_ttl_s
     payload = {
         "sub": user_id,
         "role": role,

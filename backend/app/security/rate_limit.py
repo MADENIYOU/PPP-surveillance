@@ -4,10 +4,12 @@ from __future__ import annotations
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])
+LIMITS = {
+    "auth_login": "5/minute",
+    "reports_create": "10/minute",
+    "export_data": "5/hour",
+    "sensor_data": "60/minute",
+    "admin_sensors": "60/minute",
+}
 
-# Limites spécifiques (appliquées par décorateur dans les routers) :
-#   POST /reports        : 10/minute par IP
-#   POST /auth/login     : 5/minute par IP (anti brute-force)
-#   GET  /export/data    : 5/hour
-#   GET  /sensors/{id}/data : 60/minute
+limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])

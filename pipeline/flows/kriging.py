@@ -18,8 +18,8 @@ le flow se termine proprement sans écriture (log WARNING).
 from __future__ import annotations
 
 import json
-import logging
 import os
+import structlog
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,12 +41,12 @@ except ImportError:
         def _d(fn): return fn
         return _d
     def get_run_logger():
-        return logging.getLogger("kriging")
+        return structlog.get_logger("kriging")
 
 from db.influxdb_client import get_influxdb_client, query_cleansed_zone_mean  # noqa: E402
 from db.postgres_client import PostgresPool  # noqa: E402
 
-LOGGER = logging.getLogger("kriging")
+LOGGER = structlog.get_logger("kriging")
 
 # Grille Dakar (§7.1)
 LAT_MIN, LAT_MAX = 14.60, 14.82
@@ -225,6 +225,17 @@ def _iso(dt: datetime) -> str:
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+    )
     result = run_kriging()
     print("kriging result:", result)

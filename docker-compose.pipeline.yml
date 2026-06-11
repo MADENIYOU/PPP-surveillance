@@ -48,7 +48,7 @@ services:
       # Nombre de capteurs attendus par heure (pour Q1)
       EXPECTED_SENSORS: 10
     volumes:
-      - pipeline-models:/app/models          # modèles ML partagés entre workers et flows
+      - ./pipeline/models:/app/models       # bind mount hôte → survit à docker compose down -v
       - pipeline-dead-letter:/app/dead_letter
       - pipeline-logs:/app/logs
     networks: [dakar-net]
@@ -79,7 +79,7 @@ services:
       INFLUXDB_ORG: ${INFLUXDB_ORG:-dakar_pollution}
       EXPECTED_SENSORS: 10
     volumes:
-      - pipeline-models:/app/models
+      - ./pipeline/models:/app/models       # bind mount hôte — même stockage que start.sh
       - pipeline-logs:/app/logs
     networks: [dakar-net]
 
@@ -88,6 +88,5 @@ networks:
     external: true         # réseau créé par docker-compose.infra.yml
 
 volumes:
-  pipeline-models:
   pipeline-dead-letter:
   pipeline-logs:

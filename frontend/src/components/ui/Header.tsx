@@ -11,6 +11,9 @@ export function Header({ live }: { live?: React.ReactNode }) {
               className="rounded bg-orange-500 px-3 py-1.5 font-medium hover:bg-orange-600">
           Signaler
         </Link>
+        <Link to="/pipeline" className="text-slate-300 hover:text-white transition-colors">
+          Pipeline
+        </Link>
         <Link to="/about" className="hover:underline">
           À propos
         </Link>

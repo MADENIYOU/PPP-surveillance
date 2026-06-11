@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Request
 
 from app.db import postgres
+from app.models.auth import AdminErasureRequest, ErasureResponse
 from app.security.rate_limit import limiter
 from app.security.rbac import require_role
 from app.utils.audit import log_sensitive_access
@@ -42,3 +43,22 @@ def admin_sensors(request: Request, user: dict = Depends(require_role("admin")))
 
     return {"sensors": rows,
             "meta": {"total": len(rows), "generated_at": datetime.now(timezone.utc)}}
+
+
+@router.post("/gdpr/erase", response_model=ErasureResponse)
+@limiter.limit("2/hour")
+def admin_erase_user(request: Request, body: AdminErasureRequest,
+                     user: dict = Depends(require_role("super_admin"))):
+    """Effacement RGPD initié par un administrateur super_admin."""
+    with postgres.cursor() as cur:
+        cur.execute("SELECT * FROM gdpr_erase_user(%s::uuid)", (body.user_id,))
+        cur.fetchall()
+
+    log_sensitive_access("DELETE", "users", body.user_id,
+                         request.client.host if request.client else None,
+                         {"gdpr_erasure": True, "admin_initiated": True, "reason": body.reason,
+                          "by_admin": user["sub"]})
+
+    return ErasureResponse(
+        message=f"Compte utilisateur {body.user_id} effacé. Raison: {body.reason}"
+    )

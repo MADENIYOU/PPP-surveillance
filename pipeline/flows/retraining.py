@@ -25,9 +25,9 @@ Archivage : models/archive/  — garde les 3 dernières versions de chaque modè
 from __future__ import annotations
 
 import json
-import logging
 import os
 import shutil
+import structlog
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -49,12 +49,12 @@ except ImportError:
         def _d(fn): return fn
         return _d
     def get_run_logger():
-        return logging.getLogger("retraining")
+        return structlog.get_logger("retraining")
 
 from db.influxdb_client import get_influxdb_client, INFLUX_BUCKET_CLEANSED, INFLUX_ORG
 from db.postgres_client import PostgresPool
 
-LOGGER = logging.getLogger("retraining")
+LOGGER = structlog.get_logger("retraining")
 MODELS_DIR    = PIPELINE_ROOT / "models"
 ARCHIVE_DIR   = MODELS_DIR / "archive"
 STATE_FILE    = MODELS_DIR / "retrain_state.json"
@@ -327,7 +327,7 @@ def finetune_lstm(pool: PostgresPool) -> Optional[dict]:
         import joblib
         import numpy as np
         from torch.utils.data import DataLoader, TensorDataset
-        from models_def import LSTMPollution, LSTMLightPollution, LSTM_LIGHT_FEATURES
+        from models_def import LSTMPollution, LSTMLightPollution, safe_load_model, save_model_state
     except ImportError as exc:
         log.warning("lstm_finetune_skipped missing_deps=%s", exc)
         return None
@@ -385,7 +385,10 @@ def finetune_lstm(pool: PostgresPool) -> Optional[dict]:
         dl_tr = DataLoader(TensorDataset(Xt[:split], yt[:split]), batch_size=16, shuffle=True)
         dl_va = DataLoader(TensorDataset(Xt[split:], yt[split:]), batch_size=16)
 
-        model = torch.load(model_path, weights_only=False)
+        model = safe_load_model(model_path, model_name, n_features=len(feat_cols))
+        if model is None:
+            log.warning("lstm_load_failed model=%s", model_name)
+            continue
         model.train()
         opt  = torch.optim.Adam(model.parameters(), lr=1e-4)
         loss_fn = nn.MSELoss()
@@ -416,7 +419,7 @@ def finetune_lstm(pool: PostgresPool) -> Optional[dict]:
         if improvement >= 0.005:   # amélioration ≥ 0.5%
             model.to("cpu")
             _archive(model_path)
-            torch.save(model, model_path)
+            save_model_state(model, model_path, model_name, len(feat_cols))
             log.info("lstm_finetuned model=%s prev_rmse=%.4f new_rmse=%.4f imp=%.1f%%",
                      model_name, prev_val, new_val, improvement * 100)
             results[model_name] = {"prev_rmse": float(prev_val),
@@ -554,6 +557,17 @@ def run_retraining():
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+    )
     result = run_retraining()
     print("retraining result:", result)
