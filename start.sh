@@ -86,6 +86,12 @@ info "Prérequis OK"
 
 # ── Étape 1 : Infra ───────────────────────────────────────────────────────────
 step "Étape 1/5 — Démarrage infra (Postgres · InfluxDB · Mosquitto)…"
+
+# Build l'image Postgres localement (pas de registry)
+step "  Build image Postgres + PostGIS + pgvector…"
+$COMPOSE_INFRA build --quiet postgres 2>&1 | tail -3
+info "  Image dakar-postgres-postgis-pgvector prête"
+
 $COMPOSE_INFRA up -d
 
 step "Attente healthchecks (max 2 min)…"
