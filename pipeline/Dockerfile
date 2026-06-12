@@ -1,8 +1,8 @@
 FROM python:3.11-slim
 
-# Dépendances système (psycopg2 binary, numpy, scikit-learn)
+# Dépendances système pour scikit-learn, scipy, psycopg2 (multi-arch amd64/arm64)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev curl \
+    gcc g++ gfortran libpq-dev curl libopenblas-dev liblapack-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
