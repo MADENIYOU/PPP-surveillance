@@ -87,10 +87,14 @@ info "Prérequis OK"
 # ── Étape 1 : Infra ───────────────────────────────────────────────────────────
 step "Étape 1/5 — Démarrage infra (Postgres · InfluxDB · Mosquitto)…"
 
-# Build l'image Postgres localement (pas de registry)
-step "  Build image Postgres + PostGIS + pgvector…"
-$COMPOSE_INFRA build --quiet postgres 2>&1 | tail -3
-info "  Image dakar-postgres-postgis-pgvector prête"
+# Build l'image Postgres localement si absente (pas de registry)
+if ! docker image inspect dakar-postgres-postgis-pgvector:16 >/dev/null 2>&1; then
+  step "  Build image Postgres + PostGIS + pgvector…"
+  $COMPOSE_INFRA build --quiet postgres 2>&1 | tail -3
+  info "  Image dakar-postgres-postgis-pgvector prête"
+else
+  info "  Image Postgres déjà présente (skip build)"
+fi
 
 $COMPOSE_INFRA up -d
 
@@ -122,7 +126,8 @@ fi
 
 # ── Étape 3 : Build image pipeline ───────────────────────────────────────────
 step "Étape 3/5 — Build image pipeline…"
-$COMPOSE_ALL build --quiet pipeline-workers
+# Build uniquement le pipeline (pas Postgres, déjà fait)
+$COMPOSE_ALL build --quiet pipeline-workers 2>&1 | tail -5
 info "Image dakar-pipeline prête"
 
 # ── Étape 4 : Entraînement initial ────────────────────────────────────────────

@@ -1,14 +1,15 @@
 FROM python:3.11-slim
 
-# Dépendances système pour scikit-learn, scipy, psycopg2 (multi-arch amd64/arm64)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ gfortran libpq-dev curl libopenblas-dev liblapack-dev \
+# Dépendances système minimales (scikit-learn a des wheels ARM64 précompilés)
+RUN apt-get update && apt-get install -y --no-install-recommends --no-install-suggests \
+    gcc libpq-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# --prefer-binary : utilise les wheels précompilés, pas de compilation from source
+RUN pip install --no-cache-dir --prefer-binary -r requirements.txt
 
 COPY . .
 
