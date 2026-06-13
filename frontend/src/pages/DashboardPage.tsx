@@ -112,7 +112,7 @@ export function DashboardPage() {
           </h3>
           {predictions?.data?.predictions ? (
             <div className="space-y-3">
-              {predictions.data.predictions.map((p: any, i: number) => (
+              {predictions?.data?.predictions?.map((p: any, i: number) => (
                 <div key={i} className="flex items-center justify-between rounded-lg bg-gray-800/50 px-3 py-2">
                   <span className="text-sm text-gray-300">
                     {new Date(p.target_timestamp).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}

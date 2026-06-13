@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Component, type ReactNode } from "react";
 import { Sidebar } from "./components/ui/Sidebar";
 import { Header } from "./components/ui/Header";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -16,8 +17,24 @@ import { useEffect } from "react";
 import { fetchInitialData } from "./lib/apiClient";
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { refetchInterval: 60_000, staleTime: 30_000 } },
+  defaultOptions: { queries: { refetchInterval: 60_000, staleTime: 30_000, retry: 1 } },
 });
+
+class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  state = { hasError: false };
+  static getDerivedStateFromError() { return { hasError: true }; }
+  render() {
+    if (this.state.hasError) return (
+      <div className="flex h-screen items-center justify-center bg-gray-950 text-gray-400">
+        <div className="text-center">
+          <p className="text-xl font-bold text-red-400">Erreur d'affichage</p>
+          <p className="mt-2 text-sm">Rechargez la page ou vérifiez que l'API est accessible.</p>
+        </div>
+      </div>
+    );
+    return this.props.children;
+  }
+}
 
 function AppShell() {
   const { setZones, setActiveZone } = useAppStore();
@@ -61,7 +78,9 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <AppShell />
+        <ErrorBoundary>
+          <AppShell />
+        </ErrorBoundary>
       </BrowserRouter>
     </QueryClientProvider>
   );
