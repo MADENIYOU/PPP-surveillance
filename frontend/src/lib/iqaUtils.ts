@@ -50,6 +50,8 @@ export function getAQIColor(value: number, pollutant: string): string {
   const iqa = Math.min(500, (value / (pollutant === "pm10" ? 425 : 100)) * 150);
   return getIQAColor(iqa);
 }
+
+export function getUnit(pollutant: string): string {
   switch (pollutant) {
     case 'pm25':
     case 'pm10':
