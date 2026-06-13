@@ -2,7 +2,7 @@ paho-mqtt>=1.6,<2.0
 pydantic>=2.5
 influxdb-client[ciso]>=1.40
 psycopg2-binary>=2.9
-structlog>=24.1
+structlog>=23.0,<24.0
 PyYAML>=6.0
 # Workers calibration / anomaly detection
 numpy>=1.26
