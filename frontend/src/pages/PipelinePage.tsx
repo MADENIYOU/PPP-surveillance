@@ -217,7 +217,7 @@ export function PipelinePage() {
                 </div>
               </div>
             </div>
-          ) : null}
+          )}
         </section>
 
         {/* Alerts SSE + Model Registry */}
