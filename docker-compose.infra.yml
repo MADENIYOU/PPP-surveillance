@@ -126,6 +126,7 @@ services:
 
 networks:
   dakar-net:
+    name: dakar-net
     driver: bridge
 
 volumes:
