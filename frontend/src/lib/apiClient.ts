@@ -1,7 +1,16 @@
 // Client API — fetch wrapper avec gestion du format d'erreur standard (§8)
 
-const BASE_URL = import.meta.env.VITE_API_URL || '/api';
+const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
 const TOKEN_KEY = 'dakar_pollution_token';
+
+export async function fetchInitialData() {
+  try {
+    const res = await fetch(`${BASE_URL}/zones`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    return { zones: json.data ?? [] };
+  } catch { return null; }
+}
 
 export class ApiError extends Error {
   constructor(

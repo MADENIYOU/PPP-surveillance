@@ -1,45 +1,67 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { BrowserRouter, Route, Routes } from 'react-router-dom';
-
-import { AboutPage } from './pages/AboutPage';
-import { AlertsPage } from './pages/AlertsPage';
-import { AnomaliesPage } from './pages/AnomaliesPage';
-import { CalibrationPage } from './pages/CalibrationPage';
-import { DashboardPage } from './pages/DashboardPage';
-import { DataFlowPage } from './pages/DataFlowPage';
-import { FlowDetailPage } from './pages/FlowDetailPage';
-import { LogsPage } from './pages/LogsPage';
-import { ModelDetailPage } from './pages/ModelDetailPage';
-import { PipelinePage } from './pages/PipelinePage';
-import { ReportPage } from './pages/ReportPage';
-import { SensorGridPage } from './pages/SensorGridPage';
-import { WorkerDetailPage } from './pages/WorkerDetailPage';
-import { ZonePage } from './pages/ZonePage';
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Sidebar } from "./components/ui/Sidebar";
+import { Header } from "./components/ui/Header";
+import { DashboardPage } from "./pages/DashboardPage";
+import { MapPage } from "./pages/MapPage";
+import { PredictionsPage } from "./pages/PredictionsPage";
+import { AlertsPage } from "./pages/AlertsPage";
+import { SensorsPage } from "./pages/SensorsPage";
+import { ReportsPage } from "./pages/ReportsPage";
+import { ComparePage } from "./pages/ComparePage";
+import { AboutPage } from "./pages/AboutPage";
+import { LiveIndicator } from "./components/ui/LiveIndicator";
+import { useAppStore } from "./store/useAppStore";
+import { useEffect } from "react";
+import { fetchInitialData } from "./lib/apiClient";
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { refetchOnWindowFocus: false } },
+  defaultOptions: { queries: { refetchInterval: 60_000, staleTime: 30_000 } },
 });
+
+function AppShell() {
+  const { setZones, setActiveZone } = useAppStore();
+
+  useEffect(() => {
+    fetchInitialData().then((data) => {
+      if (data?.zones) setZones(data.zones);
+      if (data?.zones?.[0]) setActiveZone(data.zones[0].id);
+    }).catch(() => {});
+  }, []);
+
+  return (
+    <div className="flex h-screen overflow-hidden bg-gray-950 text-gray-100">
+      <Sidebar />
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <Header>
+          <LiveIndicator />
+        </Header>
+        <main className="flex-1 overflow-y-auto p-4 md:p-6">
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/map" element={<MapPage />} />
+            <Route path="/predictions" element={<PredictionsPage />} />
+            <Route path="/alerts" element={<AlertsPage />} />
+            <Route path="/sensors" element={<SensorsPage />} />
+            <Route path="/reports" element={<ReportsPage />} />
+            <Route path="/compare" element={<ComparePage />} />
+            <Route path="/about" element={<AboutPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </main>
+        <footer className="border-t border-gray-800 px-4 py-2 text-center text-xs text-gray-600">
+          Surveillance Citoyenne de la Pollution — Dakar, Sénégal · Données mises à jour en continu
+        </footer>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/zone/:zone_id" element={<ZonePage />} />
-          <Route path="/report" element={<ReportPage />} />
-          <Route path="/pipeline" element={<PipelinePage />} />
-          <Route path="/pipeline/anomalies" element={<AnomaliesPage />} />
-          <Route path="/pipeline/alerts" element={<AlertsPage />} />
-          <Route path="/pipeline/model/:name" element={<ModelDetailPage />} />
-          <Route path="/pipeline/worker/:name" element={<WorkerDetailPage />} />
-          <Route path="/pipeline/flow/:name" element={<FlowDetailPage />} />
-          <Route path="/pipeline/dataflow" element={<DataFlowPage />} />
-          <Route path="/pipeline/sensors" element={<SensorGridPage />} />
-          <Route path="/pipeline/logs" element={<LogsPage />} />
-          <Route path="/pipeline/calibration" element={<CalibrationPage />} />
-          <Route path="/about" element={<AboutPage />} />
-        </Routes>
+        <AppShell />
       </BrowserRouter>
     </QueryClientProvider>
   );
