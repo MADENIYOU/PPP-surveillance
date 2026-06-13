@@ -48,9 +48,11 @@ services:
       # Nombre de capteurs attendus par heure (pour Q1)
       EXPECTED_SENSORS: 10
     volumes:
-      - ./pipeline/models:/app/models       # bind mount hôte → survit à docker compose down -v
+      - ./pipeline/models:/app/models
       - pipeline-dead-letter:/app/dead_letter
       - pipeline-logs:/app/logs
+    ports:
+      - "9090:9090"
     networks: [dakar-net]
     healthcheck:
       test: ["CMD-SHELL", "supervisorctl -c /app/supervisord.conf status | grep -v STOPPED | grep -q RUNNING || exit 1"]

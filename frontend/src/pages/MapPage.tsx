@@ -34,7 +34,7 @@ function HeatmapLayer({ zoneId }: { zoneId: number }) {
       const alpha = Math.min(0.8, v / 200);
       const r = v > 100 ? 220 : v > 50 ? 240 : 0;
       const g = v > 100 ? 38 : v > 50 ? 180 : 220;
-      const b = v > 100 ? 38 : 0 : 0;
+      const b = v > 100 ? 38 : 0;
       return { fillColor: `rgb(${r},${g},${b})`, fillOpacity: alpha, color: "transparent", weight: 0 };
     },
   }).addTo(map);
