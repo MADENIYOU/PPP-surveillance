@@ -6,11 +6,11 @@
 #
 # Ce script fait TOUT dans l'ordre :
 #   1. Vérifie Docker + .env
-#   2. Démarre Postgres, InfluxDB, Mosquitto (attend "healthy")
+#   2. Démarre Postgres, InfluxDB, Mosquitto, Redis (attend "healthy")
 #   3. Applique les migrations SQL (idempotent)
-#   4. Build l'image pipeline
+#   4. Build les images pipeline + backend + frontend
 #   5. Entraîne les modèles de base si absents (RF + IF, ~2 min)
-#   6. Démarre les workers + flows en arrière-plan (permanent)
+#   6. Démarre workers + flows + backend + frontend (permanent)
 #
 # Options :
 #   --no-train      Saute l'entraînement (démarre en mode fallback)
@@ -23,7 +23,9 @@
 set -euo pipefail
 
 COMPOSE_INFRA="docker compose -f docker-compose.infra.yml"
-COMPOSE_ALL="docker compose -f docker-compose.infra.yml -f docker-compose.pipeline.yml"
+COMPOSE_PIPELINE="docker compose -f docker-compose.infra.yml -f docker-compose.pipeline.yml"
+COMPOSE_APP="docker compose -f docker-compose.infra.yml -f docker-compose.app.yml"
+COMPOSE_ALL="docker compose -f docker-compose.infra.yml -f docker-compose.pipeline.yml -f docker-compose.app.yml"
 MODELS_DIR="./pipeline/models"
 MIGRATION_FILE="./infra/postgres/init/02_missing_tables.sql"
 
@@ -55,9 +57,9 @@ case $ACTION in
     info "Plateforme arrêtée."
     exit 0 ;;
   restart)
-    step "Redémarrage du pipeline (sans rebuild)…"
-    $COMPOSE_ALL restart pipeline-workers pipeline-flows
-    info "Pipeline redémarré."
+    step "Redémarrage du pipeline + app (sans rebuild)…"
+    $COMPOSE_ALL restart pipeline-workers pipeline-flows backend frontend
+    info "Pipeline + app redémarrés."
     exit 0 ;;
   logs)
     $COMPOSE_ALL logs -f --tail=150
@@ -85,7 +87,7 @@ fi
 info "Prérequis OK"
 
 # ── Étape 1 : Infra ───────────────────────────────────────────────────────────
-step "Étape 1/5 — Démarrage infra (Postgres · InfluxDB · Mosquitto)…"
+step "Étape 1/6 — Démarrage infra (Postgres · InfluxDB · Mosquitto · Redis)…"
 
 # Build l'image Postgres localement si absente (pas de registry)
 if ! docker image inspect dakar-postgres-postgis-pgvector:16 >/dev/null 2>&1; then
@@ -109,7 +111,7 @@ done
 info "Infra prête"
 
 # ── Étape 2 : Migrations SQL ──────────────────────────────────────────────────
-step "Étape 2/5 — Application des migrations SQL…"
+step "Étape 2/6 — Application des migrations SQL…"
 
 # Vérifie si la migration 02 est déjà appliquée (table data_quality_metrics)
 MIGRATION_NEEDED=$(docker exec dakar-postgres psql -U dakar_admin -d dakar_pollution -tAq \
@@ -124,11 +126,11 @@ else
   info "Migrations déjà à jour"
 fi
 
-# ── Étape 3 : Build image pipeline ───────────────────────────────────────────
-step "Étape 3/5 — Build image pipeline…"
-# Build uniquement le pipeline (pas Postgres, déjà fait)
+# ── Étape 3 : Build images ───────────────────────────────────────────
+step "Étape 3/6 — Build images pipeline + backend + frontend…"
 $COMPOSE_ALL build --quiet pipeline-workers 2>&1 | tail -5
-info "Image dakar-pipeline prête"
+$COMPOSE_APP build --quiet 2>&1 | tail -5
+info "Images prêtes (pipeline + backend + frontend)"
 
 # ── Étape 4 : Entraînement initial ────────────────────────────────────────────
 if [ "$NO_TRAIN" = "0" ]; then
@@ -137,13 +139,13 @@ if [ "$NO_TRAIN" = "0" ]; then
   [ -f "$MODELS_DIR/anomaly_if.pkl" ]           && IF_OK=1
 
   if [ "$RF_OK" = "1" ] && [ "$IF_OK" = "1" ]; then
-    info "Étape 4/5 — Modèles déjà présents (skip)"
+    info "Étape 4/6 — Modèles déjà présents (skip)"
   else
-    step "Étape 4/5 — Entraînement initial des modèles (~2 min)…"
+    step "Étape 4/6 — Entraînement initial des modèles (~2 min)…"
     step "  (RF calibration + Isolation Forest sur données synthétiques)"
     step "  (LSTM et Prophet entraînés automatiquement après accumulation de données réelles)"
     mkdir -p "$MODELS_DIR"
-    $COMPOSE_ALL run --rm \
+      $COMPOSE_PIPELINE run --rm \
       -v "$(pwd)/pipeline/models:/app/models" \
       pipeline-workers \
       python training/train_all.py \
@@ -153,12 +155,16 @@ if [ "$NO_TRAIN" = "0" ]; then
     info "Modèles de base entraînés"
   fi
 else
-  warn "Étape 4/5 — Entraînement skippé (--no-train) — pipeline en mode fallback"
+  warn "Étape 4/6 — Entraînement skippé (--no-train) — pipeline en mode fallback"
 fi
 
 # ── Étape 5 : Lancement pipeline permanent ────────────────────────────────────
-step "Étape 5/5 — Démarrage du pipeline (permanent)…"
-$COMPOSE_ALL up -d
+step "Étape 5/6 — Démarrage du pipeline (workers + flows)…"
+$COMPOSE_PIPELINE up -d
+
+# ── Étape 6 : Backend + Frontend ──────────────────────────────────────────────
+step "Étape 6/6 — Démarrage backend (API) + frontend (dashboard)…"
+$COMPOSE_APP up -d
 
 # Simulateur optionnel
 if [ "$WITH_SIM" = "1" ]; then
@@ -182,8 +188,11 @@ echo -e "  ${CYAN}Services actifs :${NC}"
 echo "    dakar-mosquitto         — Broker MQTT           port 1883"
 echo "    dakar-postgres          — PostgreSQL+PostGIS     port 5432"
 echo "    dakar-influxdb          — InfluxDB               port 8086  (UI: http://localhost:8086)"
+echo "    dakar-redis             — Cache                  port 6379"
 echo "    dakar-pipeline-workers  — Ingestion · Calibration · Anomaly (supervisord)"
 echo "    dakar-pipeline-flows    — Features · Prédictions · Kriging · NLP · Monitoring · Retraining"
+echo "    dakar-backend           — API FastAPI             port 8000  (Swagger: http://localhost:8000/docs)"
+echo "    dakar-frontend          — Dashboard React         port 3000  (http://localhost:3000)"
 echo ""
 echo -e "  ${CYAN}Commandes utiles :${NC}"
 echo "    ./start.sh --logs       Logs en direct"

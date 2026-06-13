@@ -67,7 +67,9 @@ function Write-Fail  { param($msg) Write-Host "[✗] $msg" -ForegroundColor Red;
 function Write-Hr    { Write-Host ("─" * 60) -ForegroundColor Cyan }
 
 $ComposeInfra    = "docker compose -f docker-compose.infra.yml"
-$ComposeAll      = "docker compose -f docker-compose.infra.yml -f docker-compose.pipeline.yml"
+$ComposePipeline = "docker compose -f docker-compose.infra.yml -f docker-compose.pipeline.yml"
+$ComposeApp      = "docker compose -f docker-compose.infra.yml -f docker-compose.app.yml"
+$ComposeAll      = "docker compose -f docker-compose.infra.yml -f docker-compose.pipeline.yml -f docker-compose.app.yml"
 $ModelsDir       = ".\pipeline\models"
 $MigrationFile   = ".\infra\postgres\init\02_missing_tables.sql"
 
@@ -80,9 +82,9 @@ if ($Down) {
 }
 
 if ($Restart) {
-    Write-Step "Redémarrage du pipeline (sans rebuild)…"
-    Invoke-Expression "$ComposeAll restart pipeline-workers pipeline-flows"
-    Write-Ok "Pipeline redémarré."
+    Write-Step "Redémarrage du pipeline + app (sans rebuild)…"
+    Invoke-Expression "$ComposeAll restart pipeline-workers pipeline-flows backend frontend"
+    Write-Ok "Pipeline + app redémarrés."
     exit 0
 }
 
@@ -163,9 +165,9 @@ if (-not $NoTrain) {
     $ifOk = Test-Path "$ModelsDir\anomaly_if.pkl"
 
     if ($rfOk -and $ifOk) {
-        Write-Ok "Étape 4/5 — Modèles déjà présents (skip)"
+        Write-Ok "Étape 4/6 — Modèles déjà présents (skip)"
     } else {
-        Write-Step "Étape 4/5 — Entraînement initial des modèles (~2 min)…"
+        Write-Step "Étape 4/6 — Entraînement initial des modèles (~2 min)…"
         Write-Step "  (RF calibration + Isolation Forest sur données synthétiques)"
         Write-Step "  (LSTM et Prophet entraînés automatiquement après accumulation de données réelles)"
 
@@ -174,7 +176,7 @@ if (-not $NoTrain) {
         }
 
         $absModels = (Resolve-Path $ModelsDir).Path
-        $trainCmd = "$ComposeAll run --rm " +
+        $trainCmd = "$ComposePipeline run --rm " +
                     "-v `"$($absModels):/app/models`" " +
                     "pipeline-workers " +
                     "python training/train_all.py --no-download --skip prophet lstm --epochs 5"
@@ -182,12 +184,17 @@ if (-not $NoTrain) {
         Write-Ok "Modèles de base entraînés"
     }
 } else {
-    Write-Warn "Étape 4/5 — Entraînement skippé (-NoTrain) — pipeline en mode fallback"
+    Write-Warn "Étape 4/6 — Entraînement skippé (-NoTrain) — pipeline en mode fallback"
 }
 
 # ── Étape 5 : Pipeline permanent ─────────────────────────────────────────────
-Write-Step "Étape 5/5 — Démarrage du pipeline (permanent)…"
-Invoke-Expression "$ComposeAll up -d"
+Write-Step "Étape 5/6 — Démarrage du pipeline (workers + flows)…"
+Invoke-Expression "$ComposePipeline up -d"
+
+# ── Étape 6 : Backend + Frontend ──────────────────────────────────────────────
+Write-Step "Étape 6/6 — Build et démarrage backend (API) + frontend (dashboard)…"
+Invoke-Expression "$ComposeApp build --quiet"
+Invoke-Expression "$ComposeApp up -d"
 
 if ($WithSim) {
     Write-Step "Démarrage du simulateur de capteurs…"
@@ -213,8 +220,11 @@ Write-Host "  Services actifs :" -ForegroundColor Cyan
 Write-Host "    dakar-mosquitto         — Broker MQTT           port 1883"
 Write-Host "    dakar-postgres          — PostgreSQL+PostGIS     port 5432"
 Write-Host "    dakar-influxdb          — InfluxDB               port 8086  (UI: http://localhost:8086)"
+Write-Host "    dakar-redis             — Cache                  port 6379"
 Write-Host "    dakar-pipeline-workers  — Ingestion · Calibration · Anomaly (supervisord)"
 Write-Host "    dakar-pipeline-flows    — Features · Prédictions · Kriging · NLP · Monitoring · Retraining"
+Write-Host "    dakar-backend           — API FastAPI             port 8000  (Swagger: http://localhost:8000/docs)"
+Write-Host "    dakar-frontend          — Dashboard React         port 3000  (http://localhost:3000)"
 Write-Host ""
 Write-Host "  Commandes utiles :" -ForegroundColor Cyan
 Write-Host "    .\start.ps1 -Logs       Logs en direct"

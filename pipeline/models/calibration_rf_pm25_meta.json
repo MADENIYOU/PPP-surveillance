@@ -1,0 +1,1 @@
+{"mae": 3.748529490811755, "rmse": 4.699175845006876, "r2": 0.8479695357116689, "features": ["pm25_raw", "temperature", "humidity", "pressure", "hour"], "target": "pm25_true"}
