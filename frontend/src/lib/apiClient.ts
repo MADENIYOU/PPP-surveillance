@@ -53,3 +53,8 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
 export function apiPost<T>(path: string, data: unknown): Promise<T> {
   return apiFetch<T>(path, { method: 'POST', body: JSON.stringify(data) });
 }
+
+export const apiClient = {
+  get: <T>(path: string) => apiFetch<{ status: string; data: T }>(path),
+  post: <T>(path: string, data: unknown) => apiPost<{ status: string; data: T }>(path, data),
+};
