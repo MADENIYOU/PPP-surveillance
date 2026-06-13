@@ -50,7 +50,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
 
 
 def start_metrics_server(port: int = 9090):
-    server = HTTPServer(("0.0.0.0", port), MetricsHandler)
+    """Démarre le serveur de métriques. Si le port est déjà pris (autre worker),
+       loggue un avertissement et continue sans planter."""
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        server = HTTPServer(("0.0.0.0", port), MetricsHandler)
+    except OSError:
+        logger.warning("Metrics server port %d already in use — skipping (another worker handles it)", port)
+        return None
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
