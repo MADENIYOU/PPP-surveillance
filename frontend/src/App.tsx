@@ -20,9 +20,12 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchInterval: 60_000, staleTime: 30_000, retry: 1 } },
 });
 
-class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
-  state = { hasError: false };
-  static getDerivedStateFromError() { return { hasError: true }; }
+class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; errorMsg: string }> {
+  state = { hasError: false, errorMsg: '' };
+  static getDerivedStateFromError(error: Error) {
+    console.error('[ErrorBoundary]', error.message, error.stack?.split('\n').slice(0, 5).join('\n'));
+    return { hasError: true, errorMsg: error.message };
+  }
   render() {
     if (this.state.hasError) return (
       <div className="flex h-screen items-center justify-center bg-gray-950 text-gray-400">
