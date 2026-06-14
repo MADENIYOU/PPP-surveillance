@@ -67,7 +67,7 @@ export function DashboardPage() {
           onChange={(e) => setActiveZone(Number(e.target.value))}
           className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200"
         >
-          {zones.map((z) => (
+          {zones?.map((z) => (
             <option key={z.id} value={z.id}>{z.name}</option>
           ))}
         </select>
