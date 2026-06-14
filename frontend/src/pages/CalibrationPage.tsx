@@ -220,11 +220,11 @@ export function CalibrationPage() {
                           <td className="py-2.5 pr-3 text-slate-400">{r.n_samples}</td>
                           <td className="py-2.5">
                             <code className="text-[10px] text-slate-500">
-                              {Object.entries(r.new_coefficients)
+                              {Object.entries(r.new_coefficients ?? {})
                                 .slice(0, 3)
                                 .map(([k, v]) => `${k}:${Number(v).toFixed(2)}`)
                                 .join(', ')}
-                              {Object.keys(r.new_coefficients).length > 3 ? '…' : ''}
+                              {Object.keys(r.new_coefficients ?? {}).length > 3 ? '…' : ''}
                             </code>
                           </td>
                         </tr>

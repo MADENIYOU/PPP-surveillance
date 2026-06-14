@@ -230,7 +230,7 @@ export function PipelinePage() {
               </h3>
               {!sseAlerts || sseAlerts.length === 0 ? (
                 <div className="max-h-80 space-y-1 overflow-y-auto pr-1">
-                  {sseAlerts.map((a) => (
+                  {(sseAlerts ?? []).map((a) => (
                     <div key={a.id} className="flex items-start justify-between rounded-lg border border-slate-700/50 bg-slate-800/50 px-3 py-2.5">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">

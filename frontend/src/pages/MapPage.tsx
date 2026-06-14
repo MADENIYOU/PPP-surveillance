@@ -92,7 +92,7 @@ export function MapPage() {
             url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
           />
           {activeZone && <HeatmapLayer zoneId={activeZone} />}
-          {sensors.map((s: any) => (
+          {(sensors ?? []).map((s: any) => (
             <Marker key={s.id} position={[s.lat ?? 14.72, s.lon ?? -17.45]} icon={sensorIcon(s.aqi ?? 0)}>
               <Popup>
                 <div className="text-sm text-gray-900">
@@ -109,7 +109,7 @@ export function MapPage() {
       <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
         <h3 className="mb-3 text-sm font-semibold text-gray-400">Capteurs en direct</h3>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {sensors.map((s: any) => (
+          {(sensors ?? []).map((s: any) => (
             <div key={s.id} className="flex items-center justify-between rounded-lg bg-gray-800/50 px-3 py-2">
               <div>
                 <p className="text-sm font-medium text-gray-200">{s.serial_number || s.name}</p>

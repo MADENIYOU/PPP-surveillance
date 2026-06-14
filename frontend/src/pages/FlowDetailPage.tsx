@@ -74,7 +74,7 @@ function ChartTooltip() {
 /* ── Feature Engineering View ─────────────────────────────────────────────── */
 
 function FeatureEngineeringView({ data }: { data: FeatureEngineeringDetail }) {
-  const radarData = data.per_zone_completeness.slice(0, 8).map((z) => ({
+  const radarData = (data.per_zone_completeness ?? []).slice(0, 8).map((z) => ({
     zone: z.zone_id,
     completude: z.completeness_pct,
   }));
@@ -334,7 +334,7 @@ function KrigingView({ data }: { data: KrigingDetail }) {
 /* ── NLP Pipeline View ────────────────────────────────────────────────────── */
 
 function NlpPipelineView({ data }: { data: NlpPipelineDetail }) {
-  const urgencyData = data.urgency_distribution.map((u) => ({
+  const urgencyData = (data.urgency_distribution ?? []).map((u) => ({
     name: u.urgency,
     value: u.count,
   }));

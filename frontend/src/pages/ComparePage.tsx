@@ -12,7 +12,7 @@ export function ComparePage() {
     queryFn: async () => {
       if (!zones.length) return [];
       const results = await Promise.all(
-        zones.slice(0, 6).map(z =>
+        (zones ?? []).slice(0, 6).map(z =>
           apiClient.get(`/aqi/current?zone_id=${z.id}`).then(r => ({ zone: z.name, ...r.data })).catch(() => null)
         )
       );

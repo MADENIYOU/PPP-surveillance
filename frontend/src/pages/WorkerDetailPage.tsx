@@ -324,8 +324,8 @@ function CalibrationView({ data }: { data: CalibrationWorkerDetail }) {
 /* ── Anomaly Detector Worker ──────────────────────────────────────────────── */
 
 function AnomalyDetectorView({ data }: { data: AnomalyDetectorDetail }) {
-  const totalDetections = data.detection_rate.reduce((s, p) => s + p.count, 0);
-  const levelData = data.level_distribution.map((l) => ({
+  const totalDetections = (data.detection_rate ?? []).reduce((s, p) => s + p.count, 0);
+  const levelData = (data.level_distribution ?? []).map((l) => ({
     name: l.level,
     value: l.count,
     color: LEVEL_COLORS[l.level] || '#64748b',
