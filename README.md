@@ -1,11 +1,17 @@
-# Plateforme Surveillance Pollution — Dakar
+# Plateforme Surveillance Citoyenne de la Pollution — Dakar
 
-Projet PPP DIC2 · Sémestre 2
+Projet PPP DIC2 · ESP Dakar (IABD — IA & Big Data)
+
+Plateforme bout-en-bout de surveillance de la qualité de l'air : ingestion IoT (MQTT),
+calibration, détection d'anomalies, prévisions ML, interpolation spatiale (kriging),
+NLP des signalements citoyens, API REST et **deux interfaces** — un dashboard citoyen
+(port 3000) et un centre de supervision data-warehouse du pipeline (port 9090).
+
+---
 
 ## Démarrage en une commande
 
 ### Linux / macOS / WSL
-
 ```bash
 cd implementation
 chmod +x start.sh
@@ -13,7 +19,6 @@ chmod +x start.sh
 ```
 
 ### Windows (PowerShell)
-
 ```powershell
 cd implementation
 .\start.ps1
@@ -22,11 +27,15 @@ cd implementation
 > **Prérequis :** Docker Desktop en cours d'exécution. C'est tout.
 
 Le script fait tout automatiquement :
-1. Démarre Postgres, InfluxDB, Mosquitto
-2. Applique les migrations SQL
-3. Build l'image du pipeline
-4. Entraîne les modèles de base (RF + Isolation Forest, ~2 min)
-5. Lance workers + flows en permanence
+1. Démarre Postgres · InfluxDB · Mosquitto · Redis (attend `healthy`)
+2. Applique les migrations SQL (idempotent)
+3. Build les images pipeline + **simulateur** + backend + frontend (multi-stage, légères)
+4. Entraîne **et enregistre** les modèles s'ils sont absents : RandomForest, IsolationForest,
+   LSTM, Prophet (LSTM/Prophet sautés automatiquement si `torch`/`prophet` ne sont pas dans l'image)
+5. Démarre toute la stack : workers · flows · **simulateur** · backend · frontend (permanent)
+
+Le **simulateur de capteurs démarre automatiquement** (service `dakar-simulator`) et publie
+en continu sur MQTT — le dashboard n'est jamais vide.
 
 ---
 
@@ -38,68 +47,74 @@ Le script fait tout automatiquement :
 | État des conteneurs | `./start.sh --status` | `.\start.ps1 -Status` |
 | Arrêt propre | `./start.sh --down` | `.\start.ps1 -Down` |
 | Redémarrage pipeline | `./start.sh --restart` | `.\start.ps1 -Restart` |
-| Avec simulateur capteurs | `./start.sh --with-sim` | `.\start.ps1 -WithSim` |
 | Sans entraînement | `./start.sh --no-train` | `.\start.ps1 -NoTrain` |
 | Backup modèles | `./backup_models.sh save` | — |
 | Restaurer modèles | `./backup_models.sh restore` | — |
 
+> Le simulateur est désormais un service Docker permanent : l'option `--with-sim`
+> (lancement hôte) reste disponible mais n'est plus nécessaire.
+
 ---
 
-## Couche applicative (API + Dashboard)
+## Les deux interfaces
 
-```bash
-# Backend FastAPI (port 8000, Swagger sur /docs) + Frontend React (port 3000)
-docker compose -f docker-compose.infra.yml -f docker-compose.app.yml up -d --build
-```
+### 1. Dashboard citoyen — `http://localhost:3000`
 
-- **API** : `http://localhost:8000` — 28 endpoints REST + SSE stream.
-  Swagger : `/docs`, Redoc : `/redoc`.
-- **Dashboard** : `http://localhost:3000` — carte Leaflet + heatmap kriging,
-  jauges IQA par zone, historique/prédictions, formulaire de signalement.
-- **Pipeline Control Center** : `http://localhost:3000/pipeline` —
-  dashboard temps réel SSE (métriques, workers, flows, modèles, anomalies, alertes).
-- **Comptes démo** (si `BACKEND_SEED_DEMO_USERS=true`) :
-  `citizen@demo.dakar-pollution.sn` / `citizen-demo-2026` (idem researcher/admin).
-- **Dev frontend** : `cd frontend && npm install && npm run dev` (proxy /api → :8000).
-- **Dev backend** : `cd backend && pip install -r requirements.txt && uvicorn app.main:app --reload`.
+Application React/Vite (recharts + Leaflet + Tailwind), data-viz riche :
 
-### Authentification & Sécurité
+| Page | Route | Contenu |
+|---|---|---|
+| **Dashboard** | `/` | KPIs réseau, jauge IQA, aire multi-polluants 24h, classement zones, radar polluants, carte kriging, **prévision PM2.5 avec bande de confiance**, conseil santé |
+| **Carte** | `/map` | Carte Leaflet + heatmap kriging interpolée, marqueurs capteurs colorés |
+| **Prédictions** | `/predictions` | Trajectoire prévue (IC 95 %), cartes par horizon, RMSE par horizon |
+| **Comparer** | `/compare` | Classement PM2.5, barres groupées PM2.5/PM10, cartes zones |
+| **Capteurs** | `/sensors` | KPIs réseau, donut disponibilité, barres batterie, sparklines PM2.5 par capteur |
+| **Alertes** | `/alerts` | KPIs gravité, donut répartition, liste détaillée |
+| **Signalements** | `/reports` | Formulaire citoyen + histogramme par jour + analyse NLP |
+| **Zone** | `/zone/:id` | Détail d'une zone (historique multi-période, capteurs, signalements) |
+
+### 2. Centre de supervision pipeline (data-warehouse) — `http://localhost:9090`
+
+Interface multi-pages autonome (sidebar de navigation, graphes SVG maison, auto-refresh 5 s) :
+
+| Page | Contenu |
+|---|---|
+| 🛰️ **Vue d'ensemble** | KPIs globaux, aire du débit d'ingestion, santé des flows, top zones |
+| 📥 **Ingestion & Workers** | Débit MQTT, état réel des workers (supervisord), messages/capteur |
+| 🗄️ **Données & Capteurs** | Volumétrie des tables, table capteurs (statut/âge/messages) |
+| ✅ **Qualité pipeline** | 6 jauges **Q1–Q6** + évolution couverture/calibration |
+| 🧠 **Modèles & ML** | Modèles enregistrés, métriques, calibration, R² |
+| 🌫️ **Qualité de l'air** | Classement PM2.5, donut des niveaux, cartes zones |
+| 🚨 **Événements** | Anomalies & alertes récentes, donut gravité |
+
+Endpoints du serveur 9090 : `/` (dashboard), `/api/overview` (JSON riche), `/metrics`
+(format Prometheus), `/health`.
+
+### 3. API FastAPI — `http://localhost:8000`
+
+REST + SSE. Swagger : `/docs`, Redoc : `/redoc`. Le frontend passe par le proxy nginx `/api`.
+
+**Pipeline Control Center** (sous `/pipeline` dans le dashboard) : pages temps réel SSE
+(workers, flows, anomalies, alertes, modèles, dataflow, logs, calibration) alimentées par
+les routes `/pipeline/*` du backend.
+
+---
+
+## Authentification & Sécurité
 
 | Fonctionnalité | Détail |
 |---|---|
 | JWT | RS256 (prod) / HS256 (dev), access + refresh tokens |
-| RBAC | 6 rôles hiérarchiques : citizen < researcher < analyst < operator < admin < super_admin |
-| Rate limiting | slowapi, limites configurées par endpoint (5/min login → 100/min public) |
-| MFA (opt-in) | TOTP via pyotp — `POST /auth/mfa/enable`, `/verify`, `/disable`, `/status` |
-| Chiffrement au repos | Fernet AES-256, opt-in via `ENCRYPTION_KEY` — chiffrement déterministe pour email |
-| RGPD | `DELETE /auth/me` (droit à l'effacement), `POST /admin/gdpr/erase`, consentement |
-| Audit logging | Table `audit_logs` partitionnée, toutes les opérations sensibles tracées |
-| PKI mTLS | 3 niveaux : Root CA → Intermediate CA → Server + 9 clients |
+| RBAC | 6 rôles : citizen < researcher < analyst < operator < admin < super_admin |
+| Rate limiting | slowapi, limites par endpoint (5/min login → 100/min public) |
+| MFA (opt-in) | TOTP via pyotp — `/auth/mfa/enable|verify|disable|status` |
+| Chiffrement au repos | Fernet AES-256 (opt-in `ENCRYPTION_KEY`), déterministe pour l'email |
+| RGPD | `DELETE /auth/me`, `POST /admin/gdpr/erase`, consentement |
+| Audit logging | Table `audit_logs` partitionnée |
+| PKI mTLS | Root CA → Intermediate CA → Server + 9 clients |
 
----
-
-## Pipeline Control Center (SSE temps réel)
-
-```
-http://localhost:3000/pipeline
-```
-
-| Page | Route | Contenu |
-|---|---|---|
-| **Pipeline** | `/pipeline` | Dashboard SSE : 6 métriques, statuts workers/flows, alertes push, modèles, infra |
-| **Worker** | `/pipeline/worker/:name` | Détail ingestion/calibration/anomaly : throughput, dead letter, Kalman, LISTEN |
-| **Flow** | `/pipeline/flow/:name` | Détail flows : coverage, RMSE horizons, radar chart, per-zone quality |
-| **Anomalies** | `/pipeline/anomalies` | Explorer : filtres, pie chart, timeline, heatmap, pagination |
-| **Alertes** | `/pipeline/alerts` | Manager : acquitter/résoudre/rejeter, bulk actions, trend chart |
-| **Modèle** | `/pipeline/model/:name` | Détail modèle : historique RMSE, versions, hyperparamètres, comparaison |
-| **DataFlow** | `/pipeline/dataflow` | Diagramme flux SVG interactif, throughput, latence, backpressure |
-| **Capteurs** | `/pipeline/sensors` | Grille capteurs : sparklines PM2.5, batterie, RSSI, filtres, modal |
-| **Logs** | `/pipeline/logs` | Stream logs : filtres service/niveau, pie/bar charts, export JSON/CSV |
-| **Calibration** | `/pipeline/calibration` | Dérive calibration : line chart par capteur, histogram drift, R² comparison |
-
-Le dashboard utilise **Server-Sent Events** (SSE) — une seule connexion TCP persistante,
-latence < 1s, pas de polling. Événements push : `metrics` (5s), `status` (10s),
-`alerts` (10s), `heartbeat` (1s).
+Comptes démo (si `BACKEND_SEED_DEMO_USERS=true`) :
+`citizen@demo.dakar-pollution.sn` / `citizen-demo-2026` (idem researcher/admin).
 
 ---
 
@@ -109,90 +124,111 @@ latence < 1s, pas de polling. Événements push : `metrics` (5s), `status` (10s)
 
 | Worker | Rôle | Technologies |
 |---|---|---|
-| **Ingestion** | MQTT → InfluxDB `air_quality_raw` | paho-mqtt, Pydantic, batch write, dead letter queue, circuit breaker |
-| **Calibration** | Raw → Cleansed (RF + Kalman) | RandomForest, Kalman 1D, hot-reload modèle, fallback linéaire |
-| **Anomaly Detector** | 3 niveaux de détection | Seuils fixes (N1), Isolation Forest (N2), règles structurelles (N3), PG NOTIFY temps réel |
+| **Ingestion** | MQTT → InfluxDB `air_quality_raw` | paho-mqtt, Pydantic, batch write, dead letter, circuit breaker |
+| **Calibration** | Raw → Cleansed | RandomForest + Kalman 1D, hot-reload, fallback linéaire |
+| **Anomaly Detector** | 3 niveaux | Seuils fixes (N1), Isolation Forest + scaler (N2), règles structurelles (N3), PG NOTIFY |
+| **Metrics** | Centre de supervision 9090 | Collecte Postgres+InfluxDB, sert `/`, `/api/overview`, `/metrics` |
 
 ### Flows planifiés (APScheduler)
 
 | Flow | Fréquence | Description |
 |---|---|---|
-| **Feature Engineering** | 15 min | 73 features (F01-F73) → `feature_store` |
-| **Predictions** | 30 min | LSTM + Prophet + fallback seuils, Monte Carlo Dropout CI |
-| **Kriging** | 1h | GPR Matérn 3/2, grille 200×200, GeoJSON |
-| **NLP** | 1h | spaCy NER, embeddings pgvector, corrélation spatio-temporelle |
-| **Monitoring** | 1h | Q1-Q6 métriques (couverture, calibration rate, RMSE, FPR, latence p95) |
-| **Retraining** | 24h-168h | Fine-tuning LSTM, réentraînement RF/IF/Prophet, archivage 3 versions |
+| **Feature Engineering** | 5 min | Features → `feature_store` |
+| **Predictions** | 30 min | LSTM + Prophet + fallback seuils (cold-start), IC 95 % |
+| **Kriging** | 1h | GPR, grille 200×200, GeoJSON → `kriging_results` |
+| **NLP** | 1h | spaCy NER, embeddings pgvector |
+| **Monitoring** | 1h | Métriques Q1–Q6 → `data_quality_metrics` |
+| **Retraining** | 6h | Réentraînement RF/IF/LSTM/Prophet sur données accumulées |
 
-### Modèles ML
+Un **bootstrap** exécute une fois les flows producteurs au premier démarrage (tables vides)
+pour peupler immédiatement le dashboard sans attendre le premier cycle.
 
-| Modèle | Type | Fichier |
+### Indicateurs qualité Q1–Q6 (monitoring)
+
+| Code | Indicateur | Seuil d'alerte |
 |---|---|---|
-| Calibration RF | RandomForest (n=150, depth=12) | `calibration_rf_pm25.pkl` |
-| Isolation Forest | IsolationForest (n=150, cont=0.03) | `anomaly_if.pkl` + scaler |
-| LSTM Full | 2 couches LSTM, 128 hidden, 57→20→3 | `lstm_full.pt` + `feature_scaler.pkl` |
-| LSTM Light | 1 couche LSTM, 64 hidden, 20→3 | `lstm_light.pt` + `feature_scaler_light.pkl` |
-| Prophet | Prophet (changepoint=0.05) | `prophet_pm25.pkl` |
+| Q1 | Couverture données (reçu/attendu) | < 0.80 |
+| Q2 | Taux de calibration (cleansed/raw) | < 0.90 |
+| Q3 | RMSE prédictions +1h | > 15 |
+| Q4 | RMSE prédictions +24h | > 25 |
+| Q5 | Taux de fausses alertes | > 0.30 |
+| Q6 | Latence pipeline p95 (ms) | — |
 
-### Monitoring & Observabilité
+> Q3/Q4/Q6 restent vides tant que les données ne sont pas matures (prédictions arrivées
+> à échéance, latence mesurable) — comportement normal de cold-start.
 
-| Composant | Port | Description |
-|---|---|---|
-| Prometheus `/metrics` | 9090 | Gauges/counters : ingestion, calibration, anomalies, alerts |
-| structlog | — | Logging JSON structuré sur tous les workers/flows |
-| Circuit breaker | — | `mqtt_breaker`, `nlp_breaker`, `weather_breaker` (failure_threshold=5) |
-| Health checks | — | Tous les conteneurs Docker avec healthcheck intégré |
+---
+
+## Modèles ML & registre
+
+Chaque script d'entraînement **enregistre automatiquement** son modèle dans la table
+PostgreSQL `models` (via `training/registry.py`) — la page Modèles (3000 et 9090) reflète
+les modèles réellement entraînés et actifs.
+
+| Modèle | Type | Fichier | Rôle |
+|---|---|---|---|
+| `calibration_rf_pm25` | RandomForest | `calibration_rf_pm25.pkl` | Calibration capteurs |
+| `anomaly_if` | IsolationForest | `anomaly_if.pkl` + scaler | Détection d'anomalies (8 features, `decision_function`) |
+| `lstm_full` | LSTM | `lstm_full.pt` + `feature_scaler.pkl` | Prédiction PM2.5 (modèle principal) |
+| `lstm_light` | LSTM | `lstm_light.pt` + scaler light | Prédiction allégée |
+| `prophet_pm25` | Prophet | `prophet_pm25.pkl` | Prédiction par tendance/saisonnalité |
+| `threshold_fallback` | (règle) | — | Repli cold-start (< 1 jour de données) |
+
+> **torch** et **prophet** sont volumineux (~+1 Go) ; ils sont compilés dans l'étage
+> *builder* du `Dockerfile` (g++ pour cmdstan) et confinés au runtime via build multi-stage.
+> `start.sh`/`start.ps1` détectent leur présence et sautent LSTM/Prophet si l'image est gardée légère.
 
 ---
 
 ## Simulation IoT
 
+Service Docker `dakar-simulator` (démarrage auto) ou lancement manuel :
+
 ```bash
 cd simulation
-python data_generator.py --sensor-ids ESP32-DK-MEDINA-001 ESP32-DK-PLATEAU-001 --duration 3600
+python data_generator.py --broker localhost --duration 3600
 ```
 
 | Module | Description |
 |---|---|
-| `data_generator.py` | Publie 5 topics MQTT : data, status, alert, gateway heartbeat, broadcast |
-| `sensor_models.py` | PMS5003 (particules), BME280 (T/H/P), MICS-6814 (CO/NO₂/NH₃), O₃ virtuel |
-| `atmospheric_models.py` | Cycles bimodaux PM2.5, Harmattan, saison des pluies, 10 zones Dakar |
-| `anomaly_injector.py` | 8 types d'anomalies : SPIKE, STUCK, DROPOUT, DRIFT, OUTLIER, HARMATTAN… |
-| `firmware_v*_sim.py` | V0 (simple, 30s), V1 (SPIFFS buffer, OTA, batterie solaire) |
-| `lora_*_sim.py` | Okumura-Hata 868 MHz, AES-128-CTR, couverture SF7-SF12 |
+| `data_generator.py` | Publie les mesures sur MQTT (`--duration 0` = continu) |
+| `sensor_models.py` | PMS5003, BME280, MICS-6814, O₃ virtuel |
+| `atmospheric_models.py` | Cycles PM2.5, Harmattan, saison des pluies, 10 zones |
+| `anomaly_injector.py` | 8 types d'anomalies (SPIKE, STUCK, DROPOUT, DRIFT…) |
+| `firmware_v*_sim.py` | V0 simple · V1 (SPIFFS buffer, OTA, solaire) |
+| `lora_*_sim.py` | Okumura-Hata 868 MHz, AES-128-CTR, SF7-SF12 |
 
 ---
 
 ## Base de données
 
-### PostgreSQL — 26 tables
+### PostgreSQL
+Extensions : PostGIS, pgvector, ltree, pgcrypto, uuid-ossp, pg_trgm.
 
 | Module | Tables |
 |---|---|
 | Spatial | `zones`, `ref_stations`, `sensors`, `air_quality` |
 | IA & Modèles | `models`, `calibration`, `predictions`, `anomaly_detections`, `alerts` |
 | Citoyen & NLP | `citizens`, `reports`, `report_entities`, `report_embeddings`, `anomaly_labels` |
-| Santé | `participants`, `health_logs`, `mitigations` |
-| Externes | `traffic_observations`, `external_weather` |
 | Features & Kriging | `feature_store`, `kriging_grid`, `kriging_results`, `data_gaps` |
-| Sécurité | `audit_logs` (partitionné), `users`, `pipeline_events`, `data_quality_metrics` |
+| Qualité & Sécurité | `data_quality_metrics`, `audit_logs` (partitionné), `users`, `pipeline_events` |
 
-Extensions : PostGIS, pgvector, ltree, pgcrypto, uuid-ossp, pg_trgm.
-
-### InfluxDB — 3 buckets + 4 tâches
+### InfluxDB
 
 | Bucket | Rétention | Mesures |
 |---|---|---|
-| `bucket_raw` | 7 jours | `air_quality_raw` (pm25, pm10, co, no2, o3, T, H, P, batterie, RSSI) |
-| `bucket_cleansed` | 2 ans | `air_quality_cleansed` (RF+Kalman), `sensor_health` |
+| `bucket_raw` | 7 jours | `air_quality_raw` |
+| `bucket_cleansed` | 2 ans | `air_quality_cleansed`, `sensor_health` |
 | `bucket_downsampled` | ∞ | `air_quality_hourly`, `air_quality_daily`, `iqa_daily` |
+
+> Les historiques du dashboard (`/aqi/history`, toutes résolutions) sont agrégés à la volée
+> depuis `bucket_cleansed` (rétention 2 ans) — pas de dépendance au bucket downsampled.
 
 ---
 
-## TLS MQTT (mTLS, S3.3)
+## TLS MQTT (mTLS)
 
 ```bash
-# Génère la PKI 3 niveaux (Root CA → Intermediate CA → Server + 9 clients)
 sh infra/mosquitto/certs/generate_certs.sh
 docker compose -f docker-compose.infra.yml restart mosquitto
 ```
@@ -204,63 +240,50 @@ docker compose -f docker-compose.infra.yml restart mosquitto
 ```
 implementation/
 ├── docker-compose.infra.yml        # Postgres · InfluxDB · Mosquitto · Redis
-├── docker-compose.pipeline.yml     # Workers (supervisord) + Flows (APScheduler)
-├── docker-compose.app.yml          # Backend FastAPI + Frontend React/Nginx
-├── start.sh                        # ← point d'entrée Linux/macOS/WSL
-├── start.ps1                       # ← point d'entrée Windows PowerShell
-├── backup_models.sh                # Sauvegarde/restauration des modèles ML
+├── docker-compose.pipeline.yml     # Workers · Flows · Simulateur
+├── docker-compose.app.yml          # Backend FastAPI · Frontend React/Nginx
+├── start.sh / start.ps1            # Point d'entrée (Linux·macOS·WSL / Windows)
+├── backup_models.sh                # Sauvegarde/restauration des modèles
 │
-├── infra/
-│   ├── postgres/init/              # 4 scripts SQL idempotents (01→04)
-│   ├── influxdb/                   # Config Flux + setup script + 4 tâches
-│   └── mosquitto/                  # Config MQTT + PKI 3 niveaux mTLS
+├── infra/                          # Init SQL · config InfluxDB+tâches · PKI MQTT
 │
 ├── pipeline/
-│   ├── workers/                    # Ingestion MQTT · Calibration RF · Anomaly IF
+│   ├── workers/                    # Ingestion · Calibration · Anomaly
 │   ├── flows/                      # Features · Prédictions · Kriging · NLP · Monitoring · Retraining
-│   ├── training/                   # Génération données · Téléchargement datasets · Entraînement
-│   ├── models/                     # Modèles sérialisés (.pkl, .pt) — bind mount hôte
-│   ├── models/archive/             # 3 dernières versions archivées par modèle
-│   ├── models_def/                 # Architectures PyTorch + safe_load_model()
-│   ├── db/                         # Clients Postgres + InfluxDB
-│   ├── circuit_breaker.py          # Circuit breaker (MQTT, NLP, Weather)
-│   ├── metrics.py                  # Prometheus /metrics endpoint (port 9090)
-│   └── run_flows.py                # Scheduler APScheduler (démarre tous les flows)
+│   ├── training/                   # Génération données · entraînement · registry.py
+│   ├── models/                     # Modèles sérialisés (bind mount hôte, persistants)
+│   ├── metrics.py                  # Serveur 9090 (collecte + endpoints)
+│   ├── dashboard_html.py           # Interface data-warehouse multi-pages (9090)
+│   └── run_flows.py                # Scheduler APScheduler + bootstrap
 │
-├── backend/
-│   ├── app/
-│   │   ├── routers/               # 10 routeurs (auth, aqi, sensors, reports, predictions,
-│   │   │                           #   map, alerts, export, admin, pipeline)
-│   │   ├── models/                 # Pydantic (aqi, auth, predictions, reports, sensors)
-│   │   ├── security/               # JWT, RBAC 6 rôles, rate limiting
-│   │   ├── middleware/             # CORS, Security Headers, Request ID, Audit Logging
-│   │   ├── db/                     # Postgres pool, Redis, InfluxDB clients, seed
-│   │   └── utils/                  # IQA calculator, audit logger, encryption
-│   └── tests/                      # test_auth_jwt.py, test_iqa.py
-│
-├── frontend/
-│   └── src/
-│       ├── pages/                  # 14 pages (Dashboard, Zone, Report, About + 10 pipeline)
-│       ├── components/             # map/, charts/, ui/
-│       ├── hooks/                  # useApi.ts (React Query) + usePipelineStream.ts (SSE)
-│       ├── lib/                    # apiClient, iqaUtils, dateUtils, leafletFix
-│       ├── store/                  # Zustand (selectedZone, historyPeriod)
-│       └── types/                  # 40+ interfaces TypeScript
-│
-└── simulation/                     # Simulateur IoT complet (capteurs, atmosphère, LoRa)
+├── backend/app/                    # routers · models · security · middleware · db · utils
+├── frontend/src/                   # pages · components(charts,map,ui) · hooks · lib · store · types
+└── simulation/                     # Simulateur IoT (capteurs · atmosphère · LoRa)
 ```
 
 ---
 
 ## Services et ports
 
-| Service | Port | UI / Accès |
+| Service | Port | Accès |
 |---|---|---|
-| **Dashboard React** | 3000 | http://localhost:3000 |
+| **Dashboard citoyen** | 3000 | http://localhost:3000 |
 | **Pipeline Control Center** | 3000 | http://localhost:3000/pipeline |
-| **API FastAPI** | 8000 | http://localhost:8000/docs (Swagger) |
-| PostgreSQL + PostGIS + pgvector | 5432 | psql -U dakar_admin -d dakar_pollution |
+| **Supervision data-warehouse** | 9090 | http://localhost:9090 |
+| **API FastAPI** | 8000 | http://localhost:8000/docs |
+| PostgreSQL + PostGIS + pgvector | 5432 | `psql -U dakar_admin -d dakar_pollution` |
 | InfluxDB | 8086 | http://localhost:8086 |
 | Mosquitto MQTT | 1883 / 8883 (TLS) | mqtt://localhost:1883 |
 | Redis | 6379 | redis-cli |
-| **Prometheus metrics** | 9090 | http://localhost:9090/metrics |
+
+---
+
+## Développement
+
+```bash
+# Frontend (proxy /api → :8000)
+cd frontend && npm install && npm run dev
+
+# Backend
+cd backend && pip install -r requirements.txt && uvicorn app.main:app --reload
+```
