@@ -1,0 +1,1 @@
+["pm25_lag_1", "pm25_lag_2", "pm25_lag_3", "pm25_lag_6", "pm25_lag_12", "pm25_rolling_mean_1h", "pm25_rolling_std_1h", "pm25_rolling_mean_3h", "pm10_lag_1", "co_lag_1", "no2_lag_1", "o3_lag_1", "temperature", "humidity", "wind_speed", "traffic_index", "hour_sin", "hour_cos", "day_of_week_sin", "day_of_week_cos"]

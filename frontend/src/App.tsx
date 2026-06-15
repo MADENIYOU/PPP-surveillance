@@ -29,9 +29,10 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
   render() {
     if (this.state.hasError) return (
       <div className="flex h-screen items-center justify-center bg-gray-950 text-gray-400">
-        <div className="text-center">
+        <div className="text-center max-w-md">
           <p className="text-xl font-bold text-red-400">Erreur d'affichage</p>
-          <p className="mt-2 text-sm">Rechargez la page ou vérifiez que l'API est accessible.</p>
+          <p className="mt-2 text-sm">Une erreur inattendue s'est produite. Rechargez la page.</p>
+          <p className="mt-1 text-xs text-gray-600 break-all">{this.state.errorMsg}</p>
         </div>
       </div>
     );
@@ -53,9 +54,7 @@ function AppShell() {
     <div className="flex h-screen overflow-hidden bg-gray-950 text-gray-100">
       <Sidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <Header>
-          <LiveIndicator lastUpdate={null} />
-        </Header>
+        <Header live={<LiveIndicator lastUpdate={null} />} />
         <main className="flex-1 overflow-y-auto p-4 md:p-6">
           <Routes>
             <Route path="/" element={<DashboardPage />} />

@@ -25,6 +25,7 @@ et qu'aucune alerte dupliquée n'a été émise dans les 30 dernières minutes (
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import select
@@ -51,8 +52,17 @@ STRUCTURAL_RULES_INTERVAL_S = 5 * 60
 
 MODELS_DIR = PIPELINE_ROOT / "models"
 IF_MODEL_PATH = MODELS_DIR / "anomaly_if.pkl"
+IF_SCALER_PATH = MODELS_DIR / "anomaly_if_scaler.pkl"
+IF_META_PATH = MODELS_DIR / "anomaly_if_meta.json"
 IF_MODEL_ID = "isolation_forest_v1"
-ANOMALY_THRESHOLD = -0.3   # Score Isolation Forest en-dessous duquel c'est une anomalie (§4)
+
+# Features attendues par l'Isolation Forest. DOIT correspondre exactement (ordre +
+# nombre) à l'entraînement (training/train_anomaly.py:IF_FEATURES). Lue depuis les
+# métadonnées du modèle pour rester synchronisée ; repli sur la liste de référence.
+# Les champs absents du flux capteur (wind_speed, traffic_index) sont remplis à 0.0
+# puis recentrés par le scaler.
+IF_FEATURES_DEFAULT = ["pm25", "pm10", "co", "no2", "o3",
+                       "temperature", "humidity", "pressure"]
 
 # ─── Seuils IQA adaptés Dakar (IQA_SPEC.md §3) ───────────────────────────────
 # Seuls "warning" (malsain pour sensibles) et "danger" (malsain+) sont déclenchés.
@@ -143,15 +153,37 @@ def _zone_int_id(pool: PostgresPool, zone_slug: str) -> int:
 # Niveaux de détection
 # ============================================================================
 def score_to_severity(score: float) -> str:
-    if score < -0.5:
+    """score = valeur de decision_function (négative ⇒ anomalie). Plus c'est
+    négatif, plus l'écart à la normale est marqué."""
+    if score < -0.15:
         return "danger"
     return "warning"
 
 
+@functools.lru_cache(maxsize=1)
+def _if_features() -> tuple[str, ...]:
+    """Liste ordonnée des features de l'IsolationForest, lue depuis les métadonnées
+    du modèle (repli sur IF_FEATURES_DEFAULT). Mise en cache (le modèle ne change
+    pas en cours d'exécution)."""
+    try:
+        meta = json.loads(IF_META_PATH.read_text())
+        feats = meta.get("features")
+        if feats:
+            return tuple(feats)
+    except Exception as exc:
+        LOGGER.warning("if_meta_load_error error=%s — features par défaut", exc)
+    return tuple(IF_FEATURES_DEFAULT)
+
+
 def build_anomaly_features(df) -> "import numpy as np; np.ndarray":
-    import numpy as np
-    cols = [c for c in ["pm25", "pm10", "co", "no2", "o3", "temperature", "humidity"] if c in df.columns]
-    return df[cols].fillna(0.0).values
+    """Construit la matrice de features dans l'ordre EXACT attendu par le modèle.
+    Les colonnes absentes du df (ex. wind_speed, traffic_index non émis par les
+    capteurs) sont créées à 0.0 → le nombre de features correspond toujours au
+    modèle, évitant le ValueError "X has N features, expecting M"."""
+    import pandas as pd
+    feats = list(_if_features())
+    aligned = df.reindex(columns=feats).fillna(0.0)
+    return aligned.values
 
 
 def detect_level1_thresholds(sensor_id: str, zone_id: str, row) -> list[dict]:
@@ -185,6 +217,9 @@ def detect_level2_isolation_forest(sensor_id: str, df) -> list[dict]:
     try:
         import joblib
         iso_forest = joblib.load(IF_MODEL_PATH)
+        # Scaler appliqué à l'entraînement (StandardScaler) : indispensable pour
+        # que les scores correspondent. Optionnel si le fichier est absent.
+        scaler = joblib.load(IF_SCALER_PATH) if IF_SCALER_PATH.exists() else None
     except Exception as exc:
         LOGGER.warning("if_model_load_error sensor=%s error=%s", sensor_id, exc)
         return []
@@ -192,21 +227,28 @@ def detect_level2_isolation_forest(sensor_id: str, df) -> list[dict]:
     if len(df) < 10:
         return []
 
+    # On utilise la fenêtre 2h comme contexte mais on n'évalue QUE la dernière
+    # observation (comme le niveau 1) : re-scorer tout l'historique à chaque cycle
+    # de 60s ré-insérait les mêmes points en boucle (faux positifs massifs).
     X = build_anomaly_features(df)
-    scores = iso_forest.score_samples(X)
-    findings = []
-    for idx in np.where(scores < ANOMALY_THRESHOLD)[0]:
-        row = df.iloc[idx]
-        findings.append({
-            "type": "pollution_anomaly",
-            "severity": score_to_severity(scores[idx]),
-            "pollutant": "pm25",
-            "detected_value": float(row.get("pm25", 0.0)),
-            "threshold": ANOMALY_THRESHOLD,
-            "score": float(scores[idx]),
-            "description": f"Isolation Forest score={scores[idx]:.3f} (seuil {ANOMALY_THRESHOLD})",
-        })
-    return findings
+    if scaler is not None:
+        X = scaler.transform(X)
+    # decision_function : négatif ⇒ anomalie. Frontière calibrée par `contamination`
+    # à l'entraînement (≈3 %), au lieu d'un seuil arbitraire sur score_samples qui
+    # flaggait 100 % des observations normales.
+    score = float(iso_forest.decision_function(X[-1:])[0])
+    if score >= 0:
+        return []
+    last_row = df.iloc[-1]
+    return [{
+        "type": "pollution_anomaly",
+        "severity": score_to_severity(score),
+        "pollutant": "pm25",
+        "detected_value": float(last_row.get("pm25", 0.0)),
+        "threshold": 0.0,
+        "score": score,
+        "description": f"Isolation Forest decision_function={score:.3f} (<0 ⇒ anomalie)",
+    }]
 
 
 def detect_level3_structural(sensor_id: str, df) -> list[dict]:

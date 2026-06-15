@@ -86,7 +86,7 @@ export function ZonePage() {
 
           {isLoading && <Spinner />}
           {history && history.data.length > 0 ? (
-            <TimeSeriesChart data={history.data} predictions={horizons} pollutant={pollutant} />
+            <TimeSeriesChart zoneId={zone_id} pollutant={pollutant} window={historyPeriod} />
           ) : (
             !isLoading && <TimeSeriesChartPlaceholder label="Pas encore de données pour cette zone." />
           )}

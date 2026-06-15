@@ -111,6 +111,10 @@ def main():
     out_meta.write_text(json.dumps(metrics))
     print(f"  Sauvegardé : {out_model}")
 
+    from training.registry import register_model
+    register_model("prophet_pm25", "Prophet", version="1.0",
+                   metrics=metrics, file_path=str(out_model))
+
 
 if __name__ == "__main__":
     main()

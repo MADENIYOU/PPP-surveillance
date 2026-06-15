@@ -305,13 +305,23 @@ def retrain_anomaly(influx) -> Optional[dict]:
     model = IsolationForest(n_estimators=150, contamination=0.03,
                             random_state=42, n_jobs=-1)
     model.fit(X)
+    import json
     import numpy as np
-    mean_score = float(model.score_samples(X).mean())
+    # Cohérent avec le détecteur : il flagge decision_function < 0.
+    decision = model.decision_function(X)
+    mean_score = float(decision.mean())
+    pct_flagged = float(np.mean(decision < 0) * 100)
 
     _archive(MODELS_DIR / "anomaly_if.pkl")
     joblib.dump(model,  MODELS_DIR / "anomaly_if.pkl")
     joblib.dump(scaler, MODELS_DIR / "anomaly_if_scaler.pkl")
-    log.info("anomaly_retrained mean_score=%.3f n_samples=%d", mean_score, len(df))
+    # Métadonnées lues par workers/anomaly_detector.py (liste + ordre des features).
+    (MODELS_DIR / "anomaly_if_meta.json").write_text(json.dumps({
+        "mean_score": mean_score, "pct_flagged_normal": pct_flagged,
+        "features": available,
+    }))
+    log.info("anomaly_retrained mean_score=%.3f pct_flagged=%.1f n_samples=%d",
+             mean_score, pct_flagged, len(df))
     return {"mean_score": mean_score, "n_samples": len(df)}
 
 

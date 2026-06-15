@@ -27,6 +27,7 @@ from app.middleware.request_id import RequestIdMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.routers import admin, alerts, aqi, auth, export, map as map_router, pipeline, predictions, reports, sensors
 from app.security.rate_limit import limiter
+from app.db import postgres
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -115,6 +116,19 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 @app.get("/health", tags=["system"])
 def health():
     return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/zones", tags=["system"])
+@limiter.limit("100/minute")
+def list_zones(request: Request):
+    zones = postgres.list_zones()
+    return {
+        "zones": [
+            {"id": z["id"], "zone_id": z["slug"], "zone_name": z["nom"],
+             "lat_center": z["lat_center"], "lon_center": z["lon_center"]}
+            for z in zones
+        ]
+    }
 
 
 for r in (auth.router, aqi.router, sensors.router, reports.router,

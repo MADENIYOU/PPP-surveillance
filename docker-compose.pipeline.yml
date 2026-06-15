@@ -85,6 +85,24 @@ services:
       - pipeline-logs:/app/logs
     networks: [dakar-net]
 
+  # ── Simulateur de capteurs IoT (publie en continu sur MQTT) ─────────────────
+  # Sans capteurs physiques, c'est la SEULE source de données du pipeline.
+  # Démarre automatiquement avec le pipeline → le dashboard n'est jamais vide.
+  # Pas de depends_on (mosquitto est dans docker-compose.infra.yml) : si le broker
+  # n'est pas prêt, le conteneur sort et restart:unless-stopped relance jusqu'au
+  # succès de la connexion MQTT.
+  simulator:
+    build:
+      context: ./simulation
+      dockerfile: Dockerfile
+    image: dakar-simulator:latest
+    container_name: dakar-simulator
+    restart: unless-stopped
+    command: ["python", "data_generator.py",
+              "--broker", "mosquitto", "--port", "1883",
+              "--interval", "10", "--duration", "0", "--headless"]
+    networks: [dakar-net]
+
 networks:
   dakar-net:
     external: true         # réseau créé par docker-compose.infra.yml

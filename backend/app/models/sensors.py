@@ -28,6 +28,22 @@ class SensorsResponse(BaseModel):
     meta: dict[str, Any]
 
 
+class SensorHistoryPoint(BaseModel):
+    timestamp: str
+    value: float
+
+
+class SensorDetail(SensorSummary):
+    pm25_history: list[SensorHistoryPoint] = []
+    calibration_coefficients: Optional[dict[str, float]] = None
+    messages_today: int = 0
+
+
+class SensorsDetailResponse(BaseModel):
+    sensors: list[SensorDetail]
+    meta: dict[str, Any]
+
+
 class SensorCurrent(BaseModel):
     pm25: Optional[float] = None
     pm10: Optional[float] = None

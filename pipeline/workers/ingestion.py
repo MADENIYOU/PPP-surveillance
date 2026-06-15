@@ -259,7 +259,6 @@ class IngestionWorker:
         # 9. Métriques (§2.2 point 9)
         latency_ms = (time.time() - t_received) * 1000
         self.messages_total += 1
-        inc_counter("dakar_messages_ingested_total", 1)
         if HAS_PROMETHEUS:
             PROM_MESSAGES.inc()
         LOGGER.debug("message_ingested sensor_id=%s seq=%s latency_ms=%.1f", sensor_id, seq, latency_ms)

@@ -80,8 +80,9 @@ def train_model(model, X_train: np.ndarray, y_train: np.ndarray,
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+    # NB: l'argument `verbose` a été retiré de ReduceLROnPlateau dans torch ≥2.x
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=3, factor=0.5, verbose=False)
+        optimizer, patience=3, factor=0.5)
 
     ds_train = TensorDataset(torch.FloatTensor(X_train), torch.FloatTensor(y_train))
     ds_val   = TensorDataset(torch.FloatTensor(X_val),   torch.FloatTensor(y_val))
@@ -211,6 +212,13 @@ def main():
         "n_features_light": len(light_feat),
     }
     (MODELS_DIR / "lstm_training_summary.json").write_text(json.dumps(summary, indent=2))
+
+    from training.registry import register_model
+    # lstm_full est le modèle de prédiction principal → actif ; lstm_light secondaire.
+    register_model("lstm_full", "LSTM", version="1.0", metrics=metrics_full,
+                   file_path=str(MODELS_DIR / "lstm_full.pt"), activate=True)
+    register_model("lstm_light", "LSTM", version="1.0-light", metrics=metrics_light,
+                   file_path=str(MODELS_DIR / "lstm_light.pt"), activate=False)
     print("Terminé.")
 
 

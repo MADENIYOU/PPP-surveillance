@@ -68,9 +68,9 @@ export function useKrigingMap() {
   return useQuery({
     queryKey: ['kriging', 'latest'],
     queryFn: () => apiFetch<KrigingResponse>('/map/kriging?max_age_hours=24'),
-    refetchInterval: 60_000,
-    staleTime: 55_000,
-    retry: 1, // 404 tant que le flow kriging n'a pas tourné — pas la peine d'insister
+    refetchInterval: 120_000,
+    staleTime: 110_000,
+    retry: false,
   });
 }
 

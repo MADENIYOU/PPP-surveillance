@@ -6,31 +6,35 @@ import { useAppStore } from "../store/useAppStore";
 import { useMemo } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import type { AqiCurrentResponse, KrigingResponse, SensorsResponse } from "../types/api";
+import { getIQAColor, pm25ToHexColor } from "../lib/iqaUtils";
 
-const sensorIcon = (aqi: number) =>
+const sensorIcon = (aqi: number | null) =>
   L.divIcon({
     className: "custom-marker",
     html: `<div style="
       width:18px;height:18px;border-radius:50%;
-      background:${aqi > 150 ? "#ef4444" : aqi > 100 ? "#f97316" : aqi > 50 ? "#eab308" : "#22c55e"};
+      background:${(aqi ?? 0) > 150 ? "#ef4444" : (aqi ?? 0) > 100 ? "#f97316" : (aqi ?? 0) > 50 ? "#eab308" : "#22c55e"};
       border:2px solid white;box-shadow:0 0 6px rgba(0,0,0,.4)
     "></div>`,
     iconSize: [18, 18],
     iconAnchor: [9, 9],
   });
 
-function HeatmapLayer({ zoneId }: { zoneId: number }) {
+function HeatmapLayer({ zoneId }: { zoneId: string }) {
   const map = useMap();
   const { data } = useQuery({
-    queryKey: ["heatmap", zoneId],
-    queryFn: () => apiClient.get(`/heatmap?zone_id=${zoneId}`).then((r) => r.data as GeoJSON.FeatureCollection),
-    refetchInterval: 60_000,
+    queryKey: ["kriging", "latest"],
+    queryFn: () => apiClient.get<KrigingResponse>("/map/kriging?max_age_hours=24"),
+    refetchInterval: 120_000,
+    staleTime: 110_000,
+    retry: false,
     enabled: !!zoneId,
   });
-  if (!data) return null;
-  const geoLayer = L.geoJSON(data, {
+  if (!data?.geojson) return null;
+  const geoLayer = L.geoJSON(data.geojson, {
     style: (f) => {
-      const v = f?.properties?.pm25_estime ?? 0;
+      const v = f?.properties?.pm25 ?? 0;
       const alpha = Math.min(0.8, v / 200);
       const r = v > 100 ? 220 : v > 50 ? 240 : 0;
       const g = v > 100 ? 38 : v > 50 ? 180 : 220;
@@ -44,25 +48,35 @@ function HeatmapLayer({ zoneId }: { zoneId: number }) {
 export function MapPage() {
   const { activeZone } = useAppStore();
 
-  const { data: allSensors } = useQuery({
+  const { data: sensorsData } = useQuery({
     queryKey: ["sensors"],
-    queryFn: () => apiClient.get("/sensors?status=active").then((r) => r.data),
+    queryFn: () => apiClient.get<SensorsResponse>("/sensors?status=active"),
     refetchInterval: 5 * 60_000,
   });
 
-  const { data: aqiList } = useQuery({
+  const { data: aqiData } = useQuery({
     queryKey: ["aqi-all"],
-    queryFn: () => apiClient.get("/aqi/map").then((r) => r.data).catch(() => null),
+    queryFn: () => apiClient.get<AqiCurrentResponse>("/aqi/current").catch(() => null),
     refetchInterval: 60_000,
   });
 
   const sensors = useMemo(() => {
-    if (!allSensors?.data) return [];
-    return allSensors.data.map((s: any) => {
-      const aqi = aqiList?.points?.[s.id]?.iqa ?? 0;
-      return { ...s, aqi };
+    if (!sensorsData?.sensors) return [];
+    const aqiByZone = new Map<string, number>();
+    aqiData?.zones?.forEach((z) => {
+      if (z.iqa != null) aqiByZone.set(z.zone_id, z.iqa);
     });
-  }, [allSensors, aqiList]);
+    return sensorsData.sensors.map((s) => ({
+      id: s.sensor_id,
+      serial_number: s.sensor_id,
+      lat: s.lat,
+      lon: s.lon,
+      zone_id: s.zone_id,
+      zone_name: s.zone_name,
+      last_seen: s.last_seen,
+      aqi: aqiByZone.get(s.zone_id) ?? null,
+    }));
+  }, [sensorsData, aqiData]);
 
   return (
     <div className="space-y-4">
@@ -93,10 +107,10 @@ export function MapPage() {
           />
           {activeZone && <HeatmapLayer zoneId={activeZone} />}
           {(sensors ?? []).map((s: any) => (
-            <Marker key={s.id} position={[s.lat ?? 14.72, s.lon ?? -17.45]} icon={sensorIcon(s.aqi ?? 0)}>
+            <Marker key={s.id} position={[s.lat ?? 14.72, s.lon ?? -17.45]} icon={sensorIcon(s.aqi)}>
               <Popup>
                 <div className="text-sm text-gray-900">
-                  <p className="font-semibold">{s.serial_number || s.name}</p>
+                  <p className="font-semibold">{s.serial_number || s.id}</p>
                   <p>IQA: <strong>{s.aqi ?? "—"}</strong></p>
                   <p>Zone: {s.zone_name || "—"}</p>
                   <p className="text-xs text-gray-500">Dernière mesure: {s.last_seen ? new Date(s.last_seen).toLocaleTimeString("fr-FR") : "—"}</p>
@@ -112,7 +126,7 @@ export function MapPage() {
           {(sensors ?? []).map((s: any) => (
             <div key={s.id} className="flex items-center justify-between rounded-lg bg-gray-800/50 px-3 py-2">
               <div>
-                <p className="text-sm font-medium text-gray-200">{s.serial_number || s.name}</p>
+                <p className="text-sm font-medium text-gray-200">{s.serial_number || s.id}</p>
                 <p className="text-[11px] text-gray-500">{s.zone_name}</p>
               </div>
               <span

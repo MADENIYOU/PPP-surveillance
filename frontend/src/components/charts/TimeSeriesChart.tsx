@@ -10,8 +10,10 @@ import {
   YAxis,
 } from 'recharts';
 
+import { useAqiHistory, usePredictions } from '../../hooks/useApi';
 import { formatDateTime } from '../../lib/dateUtils';
 import { getUnit } from '../../lib/iqaUtils';
+import { Spinner } from '../ui/Spinner';
 import type { HistoryPoint, PredictionHorizon } from '../../types/api';
 
 export type Pollutant = 'pm25' | 'pm10' | 'no2' | 'co' | 'temperature' | 'humidity';
@@ -26,26 +28,32 @@ const FIELD_BY_POLLUTANT: Record<Pollutant, keyof HistoryPoint> = {
 };
 
 interface TimeSeriesChartProps {
-  data: HistoryPoint[];
-  predictions?: PredictionHorizon[];
+  zoneId: string;
   pollutant: Pollutant;
+  window: '24h' | '7j' | '30j';
+  height?: number;
 }
 
-export function TimeSeriesChart({ data, predictions = [], pollutant }: TimeSeriesChartProps) {
+export function TimeSeriesChart({ zoneId, pollutant, window: timeWindow = '24h', height = 320 }: TimeSeriesChartProps) {
+  const { data: historyData, isLoading } = useAqiHistory(zoneId, timeWindow);
+
+  const rawData = historyData?.data ?? [];
   const field = FIELD_BY_POLLUTANT[pollutant];
-  const chartData: Record<string, unknown>[] = data.map((p) => ({
+  const chartData: Record<string, unknown>[] = rawData.map((p) => ({
     t: p.timestamp,
     mesure: p[field],
   }));
-  // Points de prédiction PM2.5 ajoutés en fin de série (pointillés)
-  if (pollutant === 'pm25') {
-    for (const h of predictions) {
-      chartData.push({ t: h.target_at, prediction: h.pm25_pred });
-    }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center" style={{ height }}>
+        <Spinner />
+      </div>
+    );
   }
 
   return (
-    <ResponsiveContainer width="100%" height={320}>
+    <ResponsiveContainer width="100%" height={height}>
       <LineChart data={chartData}>
         <CartesianGrid strokeDasharray="3 3" />
         <XAxis dataKey="t" tickFormatter={(t: string) => formatDateTime(t)} minTickGap={40} />
@@ -66,8 +74,6 @@ export function TimeSeriesChart({ data, predictions = [], pollutant }: TimeSerie
         )}
         <Line type="monotone" dataKey="mesure" name="Mesures" stroke="#2563EB"
               strokeWidth={2} dot={false} connectNulls />
-        <Line type="monotone" dataKey="prediction" name="Prédiction LSTM" stroke="#F97316"
-              strokeWidth={1.5} strokeDasharray="5 5" connectNulls />
       </LineChart>
     </ResponsiveContainer>
   );

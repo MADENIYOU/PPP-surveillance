@@ -488,9 +488,8 @@ export interface CalibrationRecord {
   calibrated_at: string;
   old_coefficients: Record<string, number> | null;
   new_coefficients: Record<string, number>;
+  pollutant?: string | null;
   r2_score: number;
-  rmse: number;
-  n_samples: number;
 }
 
 export interface CalibrationResponse {

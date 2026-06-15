@@ -20,6 +20,7 @@ import logging
 import os
 import sys
 import signal
+import threading
 from pathlib import Path
 
 PIPELINE_ROOT = Path(__file__).resolve().parent
@@ -82,6 +83,55 @@ def _run_retraining():
         run_retraining()
     except Exception as exc:
         LOGGER.error("retraining_failed error=%s", exc, exc_info=True)
+
+
+# Flows producteurs de données, dans l'ordre de dépendance (amont → aval).
+# retraining est volontairement exclu : lourd, cadence 6h, pas requis pour peupler
+# le dashboard au premier démarrage.
+_BOOTSTRAP_SEQUENCE = [
+    ("feature_engineering", _run_feature_engineering),
+    ("predictions", _run_predictions),
+    ("kriging", _run_kriging),
+    ("nlp_pipeline", _run_nlp_pipeline),
+    ("monitoring", _run_monitoring),
+]
+
+
+def _database_is_empty() -> bool:
+    """True si les tables clés sont vides → premier démarrage à amorcer.
+
+    Tolérant aux erreurs : en cas de souci de connexion, on retourne True pour
+    laisser le bootstrap tenter sa chance (les flows gèrent eux-mêmes l'absence
+    de données amont sans planter)."""
+    try:
+        from db.postgres_client import PostgresPool
+        pool = PostgresPool()
+        with pool.cursor() as cur:
+            cur.execute(
+                "SELECT (SELECT count(*) FROM kriging_results) AS kriging,"
+                "       (SELECT count(*) FROM predictions) AS preds,"
+                "       (SELECT count(*) FROM feature_store) AS feats"
+            )
+            row = cur.fetchone()
+        pool.closeall()
+        return not (row["kriging"] or row["preds"] or row["feats"])
+    except Exception as exc:
+        LOGGER.warning("bootstrap_check_failed error=%s — bootstrap forcé", exc)
+        return True
+
+
+def _bootstrap_first_run():
+    """Au premier démarrage (tables vides), exécute une fois les flows producteurs
+    de données dans l'ordre de dépendance, pour que le dashboard ne reste pas vide
+    pendant l'intervalle de planification (jusqu'à 1h pour le kriging)."""
+    if not _database_is_empty():
+        LOGGER.info("bootstrap ignoré — des données existent déjà")
+        return
+    LOGGER.info("bootstrap démarré — tables vides, exécution initiale des flows")
+    for name, fn in _BOOTSTRAP_SEQUENCE:
+        LOGGER.info("bootstrap → %s", name)
+        fn()  # chaque _run_* capture déjà ses propres exceptions
+    LOGGER.info("bootstrap terminé")
 
 
 def main():
@@ -157,6 +207,11 @@ def main():
     LOGGER.info("Ordonnanceur démarré — %d flows planifiés", len(scheduler.get_jobs()))
     for job in scheduler.get_jobs():
         LOGGER.info("  job id=%-25s name=%s", job.id, job.name)
+
+    # Amorçage au premier démarrage dans un thread daemon : ne bloque pas le
+    # scheduler ni l'arrêt gracieux (SIGTERM).
+    threading.Thread(target=_bootstrap_first_run, name="bootstrap",
+                     daemon=True).start()
 
     scheduler.start()
 

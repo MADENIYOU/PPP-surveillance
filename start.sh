@@ -127,44 +127,54 @@ else
 fi
 
 # ── Étape 3 : Build images ───────────────────────────────────────────
-step "Étape 3/6 — Build images pipeline + backend + frontend…"
-$COMPOSE_ALL build --quiet pipeline-workers 2>&1 | tail -5
+step "Étape 3/6 — Build images pipeline + simulateur + backend + frontend…"
+$COMPOSE_PIPELINE build --quiet pipeline-workers simulator 2>&1 | tail -5
 $COMPOSE_APP build --quiet 2>&1 | tail -5
-info "Images prêtes (pipeline + backend + frontend)"
+info "Images prêtes (pipeline + simulateur + backend + frontend)"
 
 # ── Étape 4 : Entraînement initial ────────────────────────────────────────────
 if [ "$NO_TRAIN" = "0" ]; then
-  RF_OK=0; IF_OK=0
-  [ -f "$MODELS_DIR/calibration_rf_pm25.pkl" ] && RF_OK=1
-  [ -f "$MODELS_DIR/anomaly_if.pkl" ]           && IF_OK=1
+  ALL_OK=1
+  for f in calibration_rf_pm25.pkl anomaly_if.pkl lstm_full.pt prophet_pm25.pkl; do
+    [ -f "$MODELS_DIR/$f" ] || ALL_OK=0
+  done
 
-  if [ "$RF_OK" = "1" ] && [ "$IF_OK" = "1" ]; then
-    info "Étape 4/6 — Modèles déjà présents (skip)"
+  # LSTM (torch) et Prophet ne s'entraînent que si leurs dépendances sont dans
+  # l'image. Sinon on les saute automatiquement (image légère par défaut).
+  SKIP_ARGS=""
+  if ! $COMPOSE_PIPELINE run --rm pipeline-workers python -c "import torch" >/dev/null 2>&1; then
+    SKIP_ARGS="$SKIP_ARGS lstm"
+  fi
+  if ! $COMPOSE_PIPELINE run --rm pipeline-workers python -c "import prophet" >/dev/null 2>&1; then
+    SKIP_ARGS="$SKIP_ARGS prophet"
+  fi
+
+  if [ "$ALL_OK" = "1" ]; then
+    info "Étape 4/6 — Modèles déjà présents — skip"
   else
-    step "Étape 4/6 — Entraînement initial des modèles (~2 min)…"
-    step "  (RF calibration + Isolation Forest sur données synthétiques)"
-    step "  (LSTM et Prophet entraînés automatiquement après accumulation de données réelles)"
+    step "Étape 4/6 — Entraînement des modèles (~3-5 min)…"
+    step "  RandomForest (calibration) · IsolationForest (anomalie)$([ -n "$SKIP_ARGS" ] && echo " (LSTM/Prophet sautés : deps absentes)" || echo " · LSTM · Prophet")"
+    step "  Chaque modèle est enregistré dans la table 'models' (page Modèles du dashboard)"
     mkdir -p "$MODELS_DIR"
       $COMPOSE_PIPELINE run --rm \
       -v "$(pwd)/pipeline/models:/app/models" \
       pipeline-workers \
       python training/train_all.py \
         --no-download \
-        --skip prophet lstm \
+        ${SKIP_ARGS:+--skip$SKIP_ARGS} \
         --epochs 5
-    info "Modèles de base entraînés"
+    info "Modèles entraînés et enregistrés"
   fi
 else
   warn "Étape 4/6 — Entraînement skippé (--no-train) — pipeline en mode fallback"
 fi
 
-# ── Étape 5 : Lancement pipeline permanent ────────────────────────────────────
-step "Étape 5/6 — Démarrage du pipeline (workers + flows)…"
-$COMPOSE_PIPELINE up -d
-
-# ── Étape 6 : Backend + Frontend ──────────────────────────────────────────────
-step "Étape 6/6 — Démarrage backend (API) + frontend (dashboard)…"
-$COMPOSE_APP up -d
+# ── Étapes 5 & 6 : Lancement de toute la stack ────────────────────────────────
+# On utilise COMPOSE_ALL (infra + pipeline + app) en une seule commande pour que
+# tous les services soient déclarés dans la même invocation → pas de warning
+# "orphan containers" (qui survenait en lançant pipeline puis app séparément).
+step "Étapes 5 & 6/6 — Démarrage pipeline (workers · flows · simulateur) + backend + frontend…"
+$COMPOSE_ALL up -d
 
 # Simulateur optionnel
 if [ "$WITH_SIM" = "1" ]; then
@@ -189,10 +199,11 @@ echo "    dakar-mosquitto         — Broker MQTT           port 1883"
 echo "    dakar-postgres          — PostgreSQL+PostGIS     port 5432"
 echo "    dakar-influxdb          — InfluxDB               port 8086  (UI: http://localhost:8086)"
 echo "    dakar-redis             — Cache                  port 6379"
-echo "    dakar-pipeline-workers  — Ingestion · Calibration · Anomaly (supervisord)"
-echo "    dakar-pipeline-flows    — Features · Prédictions · Kriging · NLP · Monitoring · Retraining"
-echo "    dakar-backend           — API FastAPI             port 8000  (Swagger: http://localhost:8000/docs)"
-echo "    dakar-frontend          — Dashboard React         port 3000  (http://localhost:3000)"
+  echo "    dakar-pipeline-workers  — Ingestion · Calibration · Anomaly (supervisord)"
+  echo "    dakar-pipeline-flows    — Features · Prédictions · Kriging · NLP · Monitoring · Retraining"
+  echo "    dakar-backend           — API FastAPI             port 8000  (Swagger: http://localhost:8000/docs)"
+  echo "    dakar-frontend          — Dashboard React         port 3000  (http://localhost:3000)"
+  echo "    pipeline-metrics        — Métriques + dashboard   port 9090  (http://localhost:9090)"
 echo ""
 echo -e "  ${CYAN}Commandes utiles :${NC}"
 echo "    ./start.sh --logs       Logs en direct"

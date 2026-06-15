@@ -116,6 +116,10 @@ def main():
     out_meta.write_text(json.dumps({**metrics, "features": FEATURES, "target": TARGET}))
     print(f"  Sauvegardé : {out_model}")
 
+    from training.registry import register_model
+    register_model("calibration_rf_pm25", "RandomForest", version="1.0",
+                   metrics=metrics, file_path=str(out_model))
+
 
 if __name__ == "__main__":
     main()

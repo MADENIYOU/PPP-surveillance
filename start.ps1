@@ -124,7 +124,18 @@ if (-not (Test-Path ".env")) {
 Write-Ok "Prérequis OK"
 
 # ── Étape 1 : Infra ───────────────────────────────────────────────────────────
-Write-Step "Étape 1/5 — Démarrage infra (Postgres · InfluxDB · Mosquitto)…"
+Write-Step "Étape 1/6 — Démarrage infra (Postgres · InfluxDB · Mosquitto · Redis)…"
+
+# Build l'image Postgres localement si absente (pas de registry)
+$postgresImg = docker image inspect dakar-postgres-postgis-pgvector:16 2>$null
+if (-not $postgresImg) {
+    Write-Step "  Build image Postgres + PostGIS + pgvector…"
+    Invoke-Expression "$ComposeInfra build --quiet postgres"
+    Write-Ok "  Image dakar-postgres-postgis-pgvector prête"
+} else {
+    Write-Ok "  Image Postgres déjà présente (skip build)"
+}
+
 Invoke-Expression "$ComposeInfra up -d"
 
 Write-Step "Attente healthchecks (max 2 min)…"
@@ -141,7 +152,7 @@ do {
 Write-Ok "Infra prête"
 
 # ── Étape 2 : Migrations SQL ──────────────────────────────────────────────────
-Write-Step "Étape 2/5 — Application des migrations SQL…"
+Write-Step "Étape 2/6 — Application des migrations SQL…"
 
 $migrationCheck = docker exec dakar-postgres psql -U dakar_admin -d dakar_pollution -tAq `
     -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name='data_quality_metrics';" 2>$null
@@ -154,47 +165,60 @@ if ($migrationCheck -eq "0" -or [string]::IsNullOrWhiteSpace($migrationCheck)) {
     Write-Ok "Migrations déjà à jour"
 }
 
-# ── Étape 3 : Build image pipeline ───────────────────────────────────────────
-Write-Step "Étape 3/5 — Build image pipeline…"
-Invoke-Expression "$ComposeAll build --quiet pipeline-workers"
-Write-Ok "Image dakar-pipeline prête"
+# ── Étape 3 : Build images ───────────────────────────────────────────
+Write-Step "Étape 3/6 — Build images pipeline + simulateur + backend + frontend…"
+Invoke-Expression "$ComposePipeline build --quiet pipeline-workers simulator"
+Invoke-Expression "$ComposeApp build --quiet"
+Write-Ok "Images prêtes (pipeline + simulateur + backend + frontend)"
 
 # ── Étape 4 : Entraînement initial ────────────────────────────────────────────
 if (-not $NoTrain) {
-    $rfOk = Test-Path "$ModelsDir\calibration_rf_pm25.pkl"
-    $ifOk = Test-Path "$ModelsDir\anomaly_if.pkl"
+    $allOk = $true
+    foreach ($f in @("calibration_rf_pm25.pkl", "anomaly_if.pkl", "lstm_full.pt", "prophet_pm25.pkl")) {
+        if (-not (Test-Path "$ModelsDir\$f")) { $allOk = $false }
+    }
 
-    if ($rfOk -and $ifOk) {
-        Write-Ok "Étape 4/6 — Modèles déjà présents (skip)"
+    # LSTM (torch) et Prophet ne s'entraînent que si leurs dépendances sont dans
+    # l'image. Sinon on les saute automatiquement (image légère par défaut).
+    $skipArgs = @()
+    Invoke-Expression "$ComposePipeline run --rm pipeline-workers python -c `"import torch`"" *> $null
+    if ($LASTEXITCODE -ne 0) { $skipArgs += "lstm" }
+    Invoke-Expression "$ComposePipeline run --rm pipeline-workers python -c `"import prophet`"" *> $null
+    if ($LASTEXITCODE -ne 0) { $skipArgs += "prophet" }
+
+    if ($allOk) {
+        Write-Ok "Étape 4/6 — Modèles déjà présents — skip"
     } else {
-        Write-Step "Étape 4/6 — Entraînement initial des modèles (~2 min)…"
-        Write-Step "  (RF calibration + Isolation Forest sur données synthétiques)"
-        Write-Step "  (LSTM et Prophet entraînés automatiquement après accumulation de données réelles)"
+        Write-Step "Étape 4/6 — Entraînement des modèles (~3-5 min)…"
+        if ($skipArgs.Count -gt 0) {
+            Write-Step "  RandomForest (calibration) · IsolationForest (anomalie) (LSTM/Prophet sautés : deps absentes)"
+        } else {
+            Write-Step "  RandomForest (calibration) · IsolationForest (anomalie) · LSTM · Prophet"
+        }
+        Write-Step "  Chaque modèle est enregistré dans la table 'models' (page Modèles du dashboard)"
 
         if (-not (Test-Path $ModelsDir)) {
             New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null
         }
 
         $absModels = (Resolve-Path $ModelsDir).Path
-        $trainCmd = "$ComposePipeline run --rm " +
-                    "-v `"$($absModels):/app/models`" " +
-                    "pipeline-workers " +
-                    "python training/train_all.py --no-download --skip prophet lstm --epochs 5"
+        $skipFlag  = if ($skipArgs.Count -gt 0) { "--skip " + ($skipArgs -join " ") } else { "" }
+        $trainCmd  = "$ComposePipeline run --rm " +
+                     "-v `"$($absModels):/app/models`" " +
+                     "pipeline-workers " +
+                     "python training/train_all.py --no-download $skipFlag --epochs 5"
         Invoke-Expression $trainCmd
-        Write-Ok "Modèles de base entraînés"
+        Write-Ok "Modèles entraînés et enregistrés"
     }
 } else {
     Write-Warn "Étape 4/6 — Entraînement skippé (-NoTrain) — pipeline en mode fallback"
 }
 
-# ── Étape 5 : Pipeline permanent ─────────────────────────────────────────────
-Write-Step "Étape 5/6 — Démarrage du pipeline (workers + flows)…"
-Invoke-Expression "$ComposePipeline up -d"
-
-# ── Étape 6 : Backend + Frontend ──────────────────────────────────────────────
-Write-Step "Étape 6/6 — Build et démarrage backend (API) + frontend (dashboard)…"
-Invoke-Expression "$ComposeApp build --quiet"
-Invoke-Expression "$ComposeApp up -d"
+# ── Étapes 5 & 6 : Lancement de toute la stack ────────────────────────────────
+# COMPOSE_ALL (infra + pipeline + app) en une seule commande → tous les services
+# déclarés ensemble, pas de warning "orphan containers".
+Write-Step "Étapes 5 & 6/6 — Démarrage pipeline (workers · flows · simulateur) + backend + frontend…"
+Invoke-Expression "$ComposeAll up -d"
 
 if ($WithSim) {
     Write-Step "Démarrage du simulateur de capteurs…"
@@ -221,10 +245,11 @@ Write-Host "    dakar-mosquitto         — Broker MQTT           port 1883"
 Write-Host "    dakar-postgres          — PostgreSQL+PostGIS     port 5432"
 Write-Host "    dakar-influxdb          — InfluxDB               port 8086  (UI: http://localhost:8086)"
 Write-Host "    dakar-redis             — Cache                  port 6379"
-Write-Host "    dakar-pipeline-workers  — Ingestion · Calibration · Anomaly (supervisord)"
-Write-Host "    dakar-pipeline-flows    — Features · Prédictions · Kriging · NLP · Monitoring · Retraining"
-Write-Host "    dakar-backend           — API FastAPI             port 8000  (Swagger: http://localhost:8000/docs)"
-Write-Host "    dakar-frontend          — Dashboard React         port 3000  (http://localhost:3000)"
+  Write-Host "    dakar-pipeline-workers  — Ingestion · Calibration · Anomaly (supervisord)"
+  Write-Host "    dakar-pipeline-flows    — Features · Prédictions · Kriging · NLP · Monitoring · Retraining"
+  Write-Host "    dakar-backend           — API FastAPI             port 8000  (Swagger: http://localhost:8000/docs)"
+  Write-Host "    dakar-frontend          — Dashboard React         port 3000  (http://localhost:3000)"
+  Write-Host "    pipeline-metrics        — Métriques + dashboard   port 9090  (http://localhost:9090)"
 Write-Host ""
 Write-Host "  Commandes utiles :" -ForegroundColor Cyan
 Write-Host "    .\start.ps1 -Logs       Logs en direct"

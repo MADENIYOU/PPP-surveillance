@@ -135,7 +135,8 @@ def fill_actual_values(pool: PostgresPool) -> None:
         cur.execute("""
             UPDATE predictions p
             SET actual_value = (
-                SELECT fs.features->>'pm25_lag_1h'
+                -- ->> renvoie du text ; actual_value est double precision → cast obligatoire
+                SELECT (fs.features->>'pm25_lag_1h')::double precision
                 FROM feature_store fs
                 WHERE fs.zone_id = p.zone_id
                   AND fs.timestamp >= p.target_timestamp - interval '30 minutes'

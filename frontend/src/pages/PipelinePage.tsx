@@ -138,7 +138,7 @@ export function PipelinePage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
-      <Header live={<LiveIndicator lastUpdate={(metrics?.generated_at || lastHeartbeat) ?? undefined} />} />
+      <Header live={<LiveIndicator lastUpdate={(metrics?.generated_at || lastHeartbeat) ?? null} />} />
 
       <main className="mx-auto max-w-7xl space-y-6 px-4 py-6">
         <div className="flex items-center justify-between">

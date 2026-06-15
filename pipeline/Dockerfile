@@ -1,16 +1,31 @@
-FROM python:3.11-slim
+# syntax=docker/dockerfile:1
+# ─── Étage build : compile les dépendances dans un venv isolé ────────────────
+FROM python:3.11-slim AS builder
 
-# Dépendances système minimales (scikit-learn a des wheels ARM64 précompilés)
+# gcc/g++ + libpq-dev nécessaires SEULEMENT à la compilation (absents de l'image finale).
+# g++ requis par cmdstan (prophet). Confinés à l'étage builder → image finale légère.
 RUN apt-get update && apt-get install -y --no-install-recommends --no-install-suggests \
-    gcc libpq-dev curl \
+    gcc g++ libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt .
-# --prefer-binary : utilise les wheels précompilés, pas de compilation from source
 RUN pip install --no-cache-dir --prefer-binary -r requirements.txt
 
+# ─── Étage final : slim sans toolchain, ne reçoit que le venv + le code ──────
+FROM python:3.11-slim
+
+# curl : seule dépendance système runtime (healthcheck des workers)
+RUN apt-get update && apt-get install -y --no-install-recommends --no-install-suggests \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /app
 COPY . .
 
 ENV PYTHONPATH=/app

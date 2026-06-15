@@ -3,15 +3,22 @@
 const BASE_URL = import.meta.env.VITE_API_URL || '/api';
 const TOKEN_KEY = 'dakar_pollution_token';
 
+type ZoneEntry = { id: string; name: string };
+
 export async function fetchInitialData() {
   try {
-    const res = await fetch(`${BASE_URL}/pipeline/status`);
-    if (!res.ok) return null;
+    const res = await fetch(`${BASE_URL}/zones`);
+    if (!res.ok) return { zones: [] as ZoneEntry[] };
     const json = await res.json();
-    return { zones: [] };
+    // Template le backend renvoie { zones: [...] }
+    const zones: ZoneEntry[] = (json.zones ?? []).map((z: any) => ({
+      id: String(z.zone_id ?? z.id),
+      name: z.zone_name ?? z.name ?? String(z.id),
+    }));
+    return { zones };
   } catch (e) {
     console.warn('fetchInitialData: API inaccessible — dashboard en mode dégradé', e);
-    return { zones: [] };
+    return { zones: [] as ZoneEntry[] };
   }
 }
 
@@ -58,6 +65,6 @@ export function apiPost<T>(path: string, data: unknown): Promise<T> {
 }
 
 export const apiClient = {
-  get: <T>(path: string) => apiFetch<{ status: string; data: T }>(path),
-  post: <T>(path: string, data: unknown) => apiPost<{ status: string; data: T }>(path, data),
+  get: <T>(path: string) => apiFetch<T>(path),
+  post: <T>(path: string, data: unknown) => apiPost<T>(path, data),
 };

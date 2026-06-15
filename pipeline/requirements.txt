@@ -10,9 +10,19 @@ pandas>=2.1
 scikit-learn>=1.4
 joblib>=1.3
 # Prefect flows
-prefect>=3.0
+# NB: Prefect 3.7 démarre un serveur API éphémère basé sur FastAPI. FastAPI >=0.116
+# casse la sous-classe PrefectRouter (AttributeError: 'PrefectRouter' object has no
+# attribute 'routes'), ce qui fait planter TOUS les flows. On épingle un couple
+# compatible tant que Prefect ne supporte pas FastAPI >=0.116.
+prefect>=3.0,<3.8
+fastapi>=0.110,<0.116
 # Spatial (kriging)
 scipy>=1.12
+# Modèles de prédiction lourds (LSTM PyTorch + Prophet).
+# torch : wheel CPU (aucun GPU dans les conteneurs). prophet : compilé par cmdstan
+# dans l'étage builder (g++ requis). Ajoutés sur demande pour la stack ML complète.
+torch>=2.2
+prophet>=1.1
 # Orchestration locale des flows
 APScheduler>=3.10
 # Superviseur de processus (workers permanents)

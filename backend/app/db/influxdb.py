@@ -87,8 +87,13 @@ def zone_history(zone_id: str, start: datetime, end: datetime,
     `every` ∈ {5m, 1h, 6h, 24h} (validé côté router)."""
     s = get_settings()
     zone = _safe(zone_id)
-    bucket = s.influxdb_bucket_cleansed if every == "5m" else s.influxdb_bucket_downsampled
-    meas = CLEANSED_MEAS if every == "5m" else HOURLY_MEAS
+    # On agrège toujours depuis le bucket cleansed (rétention 2 ans, schéma _field=pm25…)
+    # plutôt que le bucket downsampled : ce dernier stocke un schéma différent
+    # (tag `pollutant`, champs mean/min/max) incompatible avec le pivot ci-dessous,
+    # et n'est alimenté qu'après le 1er passage de la tâche horaire. aggregateWindow
+    # produit directement les fenêtres 1h/6h/24h demandées.
+    bucket = s.influxdb_bucket_cleansed
+    meas = CLEANSED_MEAS
     flux = f"""
 from(bucket: "{bucket}")
   |> range(start: {start.isoformat()}, stop: {end.isoformat()})
@@ -140,6 +145,25 @@ from(bucket: "{s.influxdb_bucket_raw}")
             entry = out.setdefault(sid, {})
             entry[r["_field"]] = r.get("_value")
             entry["_time"] = r.get("_time")
+    return out
+
+
+def messages_count_today() -> dict[str, int]:
+    """Nombre de messages (points pm25) reçus aujourd'hui, par capteur."""
+    s = get_settings()
+    flux = f"""
+from(bucket: "{s.influxdb_bucket_raw}")
+  |> range(start: today())
+  |> filter(fn: (r) => r._measurement == "{RAW_MEAS}")
+  |> filter(fn: (r) => r._field == "pm25")
+  |> group(columns: ["sensor_id"])
+  |> count()
+"""
+    out: dict[str, int] = {}
+    for r in _query(flux):
+        sid = r.get("sensor_id")
+        if sid:
+            out[sid] = int(r.get("_value") or 0)
     return out
 
 

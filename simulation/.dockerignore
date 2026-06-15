@@ -1,0 +1,19 @@
+# Environnement virtuel local
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Sorties générées (vérité terrain, logs)
+*.csv
+ground_truth*.csv
+*.log
+logs/
+
+# Tests (non nécessaires au runtime)
+test_*.py
+
+# Fichiers temporaires
+*.tmp
+.DS_Store

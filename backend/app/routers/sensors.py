@@ -7,7 +7,9 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Path, Query, Request
 
 from app.db import influxdb, postgres
-from app.models.sensors import SensorCurrent, SensorDataResponse, SensorsResponse, SensorSummary
+from app.models.sensors import (SensorCurrent, SensorDataResponse, SensorDetail,
+                                 SensorHistoryPoint, SensorsDetailResponse,
+                                 SensorsResponse, SensorSummary)
 from app.security.rate_limit import limiter
 
 router = APIRouter(prefix="/sensors", tags=["sensors"])
@@ -68,6 +70,78 @@ def list_sensors(request: Request,
     return SensorsResponse(sensors=sensors, meta={
         "total": len(sensors), "active": n_active,
         "inactive": len(sensors) - n_active,
+        "generated_at": datetime.now(timezone.utc),
+    })
+
+
+def _latest_calibration_coeffs(serials: list[str]) -> dict[str, dict[str, float]]:
+    """Derniers coefficients de calibration (pm25) par capteur."""
+    if not serials:
+        return {}
+    with postgres.cursor() as cur:
+        # calibration.sensor_id est un FK entier vers sensors.id → jointure pour
+        # retrouver le serial_number exposé par l'API.
+        cur.execute("""
+            SELECT DISTINCT ON (s.serial_number) s.serial_number, c.coef_a, c.coef_b
+            FROM calibration c
+            JOIN sensors s ON s.id = c.sensor_id
+            WHERE s.serial_number = ANY(%s)
+            ORDER BY s.serial_number, c.created_at DESC
+        """, (serials,))
+        return {r["serial_number"]: {"coef_a": r["coef_a"], "coef_b": r["coef_b"]}
+                for r in cur.fetchall()}
+
+
+@router.get("/detail", response_model=SensorsDetailResponse)
+@limiter.limit("60/minute")
+def list_sensors_detail(request: Request,
+                        zone_id: Optional[str] = Query(None),
+                        status: Optional[str] = Query(None, pattern="^(active|maintenance|inactive)$"),
+                        include_inactive: bool = Query(False)):
+    """Version enrichie de /sensors : historique PM2.5 (sparkline), coefficients de
+    calibration et volume de messages du jour. Alimente la grille capteurs (§4.3)."""
+    rows = _fetch_sensors(zone_id, status, include_inactive)
+    last = influxdb.sensor_last_values()
+    msg_today = influxdb.messages_count_today()
+    coeffs = _latest_calibration_coeffs([r["serial_number"] for r in rows])
+
+    sensors, batteries, rssis = [], [], []
+    for r in rows:
+        meta = r["metadata"] or {}
+        lv = last.get(r["serial_number"], {})
+        battery = lv.get("battery_level", meta.get("battery_pct"))
+        rssi = lv.get("rssi", meta.get("rssi_dbm"))
+        if battery is not None:
+            batteries.append(battery)
+        if rssi is not None:
+            rssis.append(rssi)
+
+        history = [
+            SensorHistoryPoint(
+                timestamp=t["_time"].isoformat() if hasattr(t.get("_time"), "isoformat") else str(t.get("_time")),
+                value=t["pm25"],
+            )
+            for t in influxdb.sensor_timeseries(r["serial_number"], hours=6, resolution="5min")
+            if t.get("pm25") is not None
+        ]
+
+        sensors.append(SensorDetail(
+            sensor_id=r["serial_number"], zone_id=r["zone_slug"], zone_name=r["zone_name"],
+            lat=r["lat"], lon=r["lon"], status=r["status"],
+            last_seen=r["last_seen"], firmware=r["firmware_version"],
+            battery_pct=battery, solar_active=meta.get("solar_panel"),
+            rssi_dbm=rssi, last_pm25=lv.get("pm25"), sim=bool(meta.get("sim", False)),
+            pm25_history=history,
+            calibration_coefficients=coeffs.get(r["serial_number"]),
+            messages_today=msg_today.get(r["serial_number"], 0),
+        ))
+
+    n_active = sum(1 for s in sensors if s.status == "active")
+    return SensorsDetailResponse(sensors=sensors, meta={
+        "total": len(sensors), "active": n_active,
+        "inactive": len(sensors) - n_active,
+        "avg_battery": round(sum(batteries) / len(batteries), 1) if batteries else None,
+        "avg_rssi": round(sum(rssis) / len(rssis), 1) if rssis else None,
         "generated_at": datetime.now(timezone.utc),
     })
 

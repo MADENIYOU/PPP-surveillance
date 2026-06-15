@@ -69,18 +69,34 @@ def _check_redis() -> str:
 @router.get("/status")
 @limiter.limit("30/minute")
 def pipeline_status(request: Request):
-    # ── Workers ───────────────────────────────────────────────────────────
     workers: dict[str, dict[str, Any]] = {}
+    flows: dict[str, dict[str, Any]] = {}
+    infra: dict[str, dict[str, Any]] = {
+        "postgres": {"status": "connected"},
+        "influxdb": {"status": _check_influx()},
+        "redis": {"status": _check_redis()},
+        "mosquitto": {"status": "unknown", "messages_since_start": 0},
+    }
 
-    with postgres.cursor() as cur:
-        # ingestion : dernier message dans air_quality
-        cur.execute("""
-            SELECT EXTRACT(EPOCH FROM now() - MIN(timestamp)) AS uptime_s,
-                   COUNT(*) AS messages_ingested,
-                   MAX(timestamp) AS last_message_at
-            FROM air_quality
-        """)
-        row = cur.fetchone()
+    def _safe_query(table: str, query: str, params=None):
+        """Exécute une requête, retourne None si la table n'existe pas."""
+        try:
+            with postgres.cursor() as cur:
+                cur.execute(query, params or [])
+                return cur.fetchone()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("pipeline_status: table '%s' inaccessible — %s", table, e)
+            return None
+
+    # ── Workers ───────────────────────────────────────────────────────────
+    row = _safe_query("air_quality", """
+        SELECT EXTRACT(EPOCH FROM now() - MIN(timestamp)) AS uptime_s,
+               COUNT(*) AS messages_ingested,
+               MAX(timestamp) AS last_message_at
+        FROM air_quality
+    """)
+    if row:
         ingestion_uptime = float(row["uptime_s"] or 0)
         workers["ingestion"] = {
             "status": "running" if row["last_message_at"] and (_now() - row["last_message_at"]).total_seconds() < 300 else "idle",
@@ -88,122 +104,128 @@ def pipeline_status(request: Request):
             "messages_ingested": row["messages_ingested"],
             "last_message_at": row["last_message_at"].isoformat() if row["last_message_at"] else None,
         }
+    else:
+        workers["ingestion"] = {"status": "unknown", "uptime_s": 0, "messages_ingested": 0, "last_message_at": None}
 
-        # calibration : dernier ajout
-        cur.execute("""
-            SELECT EXTRACT(EPOCH FROM now() - MIN(valid_from)) AS uptime_s,
-                   COUNT(*) AS messages_calibrated,
-                   MAX(created_at) AS last_calibration_at
-            FROM calibration
-        """)
-        row = cur.fetchone()
+    row = _safe_query("calibration", """
+        SELECT EXTRACT(EPOCH FROM now() - MIN(valid_from)) AS uptime_s,
+               COUNT(*) AS messages_calibrated,
+               MAX(created_at) AS last_calibration_at
+        FROM calibration
+    """)
+    if row:
         workers["calibration"] = {
             "status": "running" if row["last_calibration_at"] and (_now() - row["last_calibration_at"]).total_seconds() < 3600 else "idle",
             "uptime_s": round(float(row["uptime_s"] or 0), 0),
             "messages_calibrated": row["messages_calibrated"],
             "last_calibration_at": row["last_calibration_at"].isoformat() if row["last_calibration_at"] else None,
         }
+    else:
+        workers["calibration"] = {"status": "unknown", "uptime_s": 0, "messages_calibrated": 0, "last_calibration_at": None}
 
-        # anomaly_detector
-        cur.execute("""
-            SELECT EXTRACT(EPOCH FROM now() - MIN(detected_at)) AS uptime_s,
-                   COUNT(*) AS anomalies_detected,
-                   COUNT(*) FILTER (WHERE detected_at > now() - interval '1 hour') AS recent
-            FROM anomaly_detections
-        """)
-        row = cur.fetchone()
-        cur.execute("SELECT COUNT(*) AS cnt FROM alerts")
-        alerts_total = cur.fetchone()["cnt"]
+    row = _safe_query("anomaly_detections", """
+        SELECT EXTRACT(EPOCH FROM now() - MIN(detected_at)) AS uptime_s,
+               COUNT(*) AS anomalies_detected,
+               COUNT(*) FILTER (WHERE detected_at > now() - interval '1 hour') AS recent
+        FROM anomaly_detections
+    """)
+    alerts_total = 0
+    try:
+        with postgres.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM alerts")
+            alerts_total = cur.fetchone()["cnt"]
+    except Exception:
+        pass
+    if row:
         workers["anomaly_detector"] = {
             "status": "running" if row["recent"] and row["recent"] > 0 else "idle",
             "uptime_s": round(float(row["uptime_s"] or 0), 0),
             "anomalies_detected": row["anomalies_detected"],
             "alerts_generated": alerts_total,
         }
+    else:
+        workers["anomaly_detector"] = {"status": "unknown", "uptime_s": 0, "anomalies_detected": 0, "alerts_generated": alerts_total}
 
     # ── Flows ──────────────────────────────────────────────────────────────
-    flows: dict[str, dict[str, Any]] = {}
+    FLOW_DEFAULTS: dict[str, dict[str, Any]] = {
+        "feature_engineering": {"status": "idle", "last_run": None, "zones_processed": 0},
+        "predictions": {"status": "idle", "last_run": None, "zones_with_predictions": 0},
+        "kriging": {"status": "idle", "last_run": None},
+        "nlp_pipeline": {"status": "idle", "last_run": None, "reports_processed": 0},
+        "monitoring": {"status": "idle", "last_run": None, "metrics": {}},
+        "retraining": {"status": "idle", "last_run": None, "models_updated": []},
+    }
 
-    with postgres.cursor() as cur:
-        # feature_engineering
-        cur.execute("SELECT MAX(created_at) AS last_run, COUNT(DISTINCT zone_id) AS zones_processed FROM feature_store")
-        row = cur.fetchone()
+    row = _safe_query("feature_store", "SELECT MAX(created_at) AS last_run, COUNT(DISTINCT zone_id) AS zones_processed FROM feature_store")
+    if row:
         flows["feature_engineering"] = {
             "status": "healthy" if row["last_run"] and (_now() - row["last_run"]).total_seconds() < 3600 else "stale",
             "last_run": row["last_run"].isoformat() if row["last_run"] else None,
             "zones_processed": row["zones_processed"],
         }
 
-        # predictions
-        cur.execute("SELECT MAX(created_at) AS last_run, COUNT(DISTINCT zone_id) AS zones_with_predictions FROM predictions")
-        row = cur.fetchone()
+    row = _safe_query("predictions", "SELECT MAX(created_at) AS last_run, COUNT(DISTINCT zone_id) AS zones_with_predictions FROM predictions")
+    if row:
         flows["predictions"] = {
             "status": "healthy" if row["last_run"] and (_now() - row["last_run"]).total_seconds() < 3600 else "stale",
             "last_run": row["last_run"].isoformat() if row["last_run"] else None,
             "zones_with_predictions": row["zones_with_predictions"],
         }
 
-        # kriging
-        cur.execute("SELECT MAX(computed_at) AS last_run FROM kriging_grid")
-        row = cur.fetchone()
+    row = _safe_query("kriging_grid", "SELECT MAX(computed_at) AS last_run FROM kriging_grid")
+    if row:
         flows["kriging"] = {
             "status": "healthy" if row["last_run"] and (_now() - row["last_run"]).total_seconds() < 7200 else "stale",
             "last_run": row["last_run"].isoformat() if row["last_run"] else None,
         }
 
-        # nlp_pipeline
-        cur.execute("SELECT MAX(created_at) AS last_run, COUNT(*) AS reports_processed FROM report_embeddings")
-        row = cur.fetchone()
+    row = _safe_query("report_embeddings", "SELECT MAX(created_at) AS last_run, COUNT(*) AS reports_processed FROM report_embeddings")
+    if row:
         flows["nlp_pipeline"] = {
             "status": "healthy" if row["last_run"] and (_now() - row["last_run"]).total_seconds() < 7200 else "stale",
             "last_run": row["last_run"].isoformat() if row["last_run"] else None,
             "reports_processed": row["reports_processed"],
         }
 
-        # monitoring
-        cur.execute("SELECT MAX(computed_at) AS last_run, metrics FROM data_quality_metrics ORDER BY computed_at DESC LIMIT 1")
-        row = cur.fetchone()
+    row = _safe_query("data_quality_metrics", "SELECT MAX(computed_at) AS last_run, metrics FROM data_quality_metrics ORDER BY computed_at DESC LIMIT 1")
+    if row:
         flows["monitoring"] = {
-            "status": "healthy" if row and row["last_run"] and (_now() - row["last_run"]).total_seconds() < 3600 else "stale",
-            "last_run": row["last_run"].isoformat() if row and row["last_run"] else None,
-            "metrics": row["metrics"] if row and row["metrics"] else {},
+            "status": "healthy" if row["last_run"] and (_now() - row["last_run"]).total_seconds() < 3600 else "stale",
+            "last_run": row["last_run"].isoformat() if row["last_run"] else None,
+            "metrics": row["metrics"] if row["metrics"] else {},
         }
 
-        # retraining
-        cur.execute("""
-            SELECT MAX(training_end) AS last_run,
-                   ARRAY_AGG(name ORDER BY training_end DESC) FILTER (WHERE training_end > now() - interval '24 hours') AS models_updated
-            FROM models
-        """)
-        row = cur.fetchone()
+    row = _safe_query("models", """
+        SELECT MAX(training_end) AS last_run,
+               ARRAY_AGG(name ORDER BY training_end DESC) FILTER (WHERE training_end > now() - interval '24 hours') AS models_updated
+        FROM models
+    """)
+    if row:
         flows["retraining"] = {
             "status": "healthy" if row["last_run"] and (_now() - row["last_run"]).total_seconds() < 86400 else "idle",
             "last_run": row["last_run"].isoformat() if row["last_run"] else None,
             "models_updated": list(row["models_updated"]) if row["models_updated"] else [],
         }
 
-    # ── Infrastructure ─────────────────────────────────────────────────────
-    infra: dict[str, dict[str, Any]] = {
-        "postgres": {
-            "status": "connected",
-            "pool_size": postgres.pool_info().get("active_connections", 0),
-        },
-        "influxdb": {
-            "status": _check_influx(),
-        },
-        "redis": {
-            "status": _check_redis(),
-        },
-        "mosquitto": {},
-    }
+    for name, defaults in FLOW_DEFAULTS.items():
+        flows.setdefault(name, defaults)
 
-    with postgres.cursor() as cur:
-        cur.execute("SELECT COUNT(*) AS cnt FROM air_quality")
-        mosquitto_count = cur.fetchone()["cnt"]
-    infra["mosquitto"] = {
-        "status": "connected" if mosquitto_count > 0 else "unknown",
-        "messages_since_start": mosquitto_count,
-    }
+    # ── Infrastructure ─────────────────────────────────────────────────────
+    try:
+        infra["postgres"]["pool_size"] = postgres.pool_info().get("active_connections", 0)
+    except Exception:
+        infra["postgres"]["pool_size"] = 0
+
+    try:
+        with postgres.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM air_quality")
+            mosquitto_count = cur.fetchone()["cnt"]
+        infra["mosquitto"] = {
+            "status": "connected" if mosquitto_count > 0 else "unknown",
+            "messages_since_start": mosquitto_count,
+        }
+    except Exception:
+        infra["mosquitto"] = {"status": "unknown", "messages_since_start": 0}
 
     return {
         "workers": workers,
@@ -337,13 +359,13 @@ def pipeline_dataflow(request: Request):
 
         # per-zone message counts
         cur.execute("""
-            SELECT split_part(z.path::text, '.', -1) AS zone_id, COUNT(*) AS cnt
+            SELECT split_part(z.path::text, '.', -1) AS zone_slug, COUNT(*) AS cnt
             FROM air_quality aq
             JOIN zones z ON z.id = aq.zone_id
-            GROUP BY zone_id
+            GROUP BY z.path
             ORDER BY cnt DESC
         """)
-        per_zone = [{"zone_id": r["zone_id"], "count": r["cnt"]} for r in cur.fetchall()]
+        per_zone = [{"zone_id": r["zone_slug"], "count": r["cnt"]} for r in cur.fetchall()]
 
         # calibration success rate (r2_score > 0.5 = success)
         cur.execute("""
@@ -513,11 +535,11 @@ def pipeline_worker_detail(request: Request, name: str):
             cal_total = cal_row["total"] or 1
             result["success_rate_pct"] = round((cal_row["success"] or 0) * 100.0 / cal_total, 1)
 
-            # model info (latest RF model)
+            # model info (latest RF model) — la calibration utilise RandomForest
             cur.execute("""
                 SELECT name, version, training_end, metrics, hyperparams
                 FROM models
-                WHERE type = 'calibration'
+                WHERE type = 'RandomForest'
                 ORDER BY training_end DESC LIMIT 1
             """)
             model_row = cur.fetchone()
@@ -613,11 +635,11 @@ def pipeline_worker_detail(request: Request, name: str):
 
             # level distribution
             cur.execute("""
-                SELECT COALESCE(a.gravite, 'unclassified') AS level, COUNT(*) AS cnt
+                SELECT COALESCE(a.gravite::text, 'unclassified') AS level, COUNT(*) AS cnt
                 FROM anomaly_detections ad
                 LEFT JOIN alerts a ON a.anomaly_id = ad.id
                 WHERE ad.detected_at > now() - interval '24 hours'
-                GROUP BY a.gravite
+                GROUP BY COALESCE(a.gravite::text, 'unclassified')
                 ORDER BY cnt DESC
             """)
             result["level_distribution"] = [
@@ -748,7 +770,7 @@ def pipeline_flow_detail(request: Request, name: str):
             cur.execute("""
                 SELECT split_part(z.path::text, '.', -1) AS zone_id,
                        COUNT(*) AS feature_count,
-                       COUNT(*) FILTER (WHERE fs.metadata IS NOT NULL) AS non_null_features
+                       COUNT(*) FILTER (WHERE fs.features IS NOT NULL) AS non_null_features
                 FROM feature_store fs
                 JOIN zones z ON z.id = fs.zone_id
                 WHERE fs.timestamp > now() - interval '24 hours'
@@ -770,7 +792,7 @@ def pipeline_flow_detail(request: Request, name: str):
             cur.execute("""
                 SELECT split_part(z.path::text, '.', -1) AS zone_id,
                        fs.timestamp,
-                       fs.metadata
+                       fs.features
                 FROM feature_store fs
                 JOIN zones z ON z.id = fs.zone_id
                 ORDER BY fs.created_at DESC
@@ -780,7 +802,7 @@ def pipeline_flow_detail(request: Request, name: str):
                 {
                     "zone_id": r["zone_id"],
                     "timestamp": r["timestamp"].isoformat() if r["timestamp"] else None,
-                    "features": r["metadata"] if r["metadata"] else {},
+                    "features": r["features"] if r["features"] else {},
                 }
                 for r in cur.fetchall()
             ]
@@ -851,7 +873,7 @@ def pipeline_flow_detail(request: Request, name: str):
             cur.execute("""
                 SELECT name, version, training_end, metrics
                 FROM models
-                WHERE type = 'prediction' AND is_active = true
+                WHERE type IN ('LSTM', 'GRU', 'Prophet', 'GCN') AND is_active = true
                 ORDER BY training_end DESC LIMIT 1
             """)
             model_row = cur.fetchone()
@@ -904,8 +926,8 @@ def pipeline_flow_detail(request: Request, name: str):
             result["total_grid_points"] = grid_row["grid_points"] or 0
 
             cur.execute("""
-                SELECT MIN(lat) AS lat_min, MAX(lat) AS lat_max,
-                       MIN(lon) AS lon_min, MAX(lon) AS lon_max
+                SELECT MIN(ST_Y(point_geom)) AS lat_min, MAX(ST_Y(point_geom)) AS lat_max,
+                       MIN(ST_X(point_geom)) AS lon_min, MAX(ST_X(point_geom)) AS lon_max
                 FROM kriging_grid
             """)
             bbox = cur.fetchone()
@@ -928,8 +950,8 @@ def pipeline_flow_detail(request: Request, name: str):
             cur.execute("""
                 SELECT split_part(z.path::text, '.', -1) AS zone_id,
                        COUNT(*) AS grid_cells,
-                       AVG(kg.value) AS avg_value,
-                       STDDEV(kg.value) AS stddev_value
+                       AVG(kg.pm25_estime) AS avg_value,
+                       STDDEV(kg.pm25_estime) AS stddev_value
                 FROM kriging_grid kg
                 JOIN zones z ON z.id = kg.zone_id
                 GROUP BY z.path
@@ -1337,7 +1359,7 @@ def calibration_history(request: Request,
     params: list[Any] = []
 
     if sensor_id:
-        clauses.append("c.sensor_id = %s")
+        clauses.append("s.serial_number = %s")
         params.append(sensor_id)
     if zone_id:
         clauses.append("split_part(z.path::text, '.', -1) = %s")
@@ -1347,13 +1369,15 @@ def calibration_history(request: Request,
 
     with postgres.cursor() as cur:
         cur.execute(f"""
-            SELECT c.id, c.sensor_id, split_part(z.path::text, '.', -1) AS zone_id,
+            SELECT c.id,
+                   s.serial_number AS sensor_id,
+                   split_part(z.path::text, '.', -1) AS zone_id,
                    c.valid_from AS calibrated_at,
-                   c.coefficients AS new_coefficients,
-                   c.r2_score, c.rmse, c.n_samples
+                   c.coef_a, c.coef_b, c.pollutant,
+                   c.r2_score
             FROM calibration c
             JOIN sensors s ON s.id = c.sensor_id
-            JOIN zones z ON z.id = c.zone_id
+            JOIN zones z ON z.id = s.zone_id
             WHERE {where}
             ORDER BY c.valid_from DESC
             LIMIT %s
@@ -1363,6 +1387,7 @@ def calibration_history(request: Request,
         cur.execute(f"""
             SELECT COUNT(*) AS total FROM calibration c
             JOIN sensors s ON s.id = c.sensor_id
+            JOIN zones z ON z.id = s.zone_id
             WHERE {where}
         """, params)
         total = cur.fetchone()["total"]
@@ -1371,12 +1396,11 @@ def calibration_history(request: Request,
         "id": r["id"],
         "sensor_id": str(r["sensor_id"]),
         "zone_id": str(r["zone_id"]),
-        "calibrated_at": r["calibrated_at"].isoformat(),
-        "old_coefficients": None,  # previous row not joined for simplicity
-        "new_coefficients": r["new_coefficients"] if isinstance(r["new_coefficients"], dict) else {},
+        "calibrated_at": r["calibrated_at"].isoformat() if hasattr(r["calibrated_at"], "isoformat") else str(r["calibrated_at"]),
+        "old_coefficients": None,
+        "new_coefficients": {"coef_a": float(r["coef_a"]), "coef_b": float(r["coef_b"])} if r["coef_a"] is not None else {},
+        "pollutant": str(r["pollutant"]) if r["pollutant"] else None,
         "r2_score": float(r["r2_score"]) if r["r2_score"] else 0.0,
-        "rmse": float(r["rmse"]) if r["rmse"] else 0.0,
-        "n_samples": r["n_samples"] or 0,
     } for r in rows]
 
     return {
@@ -1394,26 +1418,25 @@ def calibration_history(request: Request,
 def calibration_drift(request: Request, hours: int = 168):
     with postgres.cursor() as cur:
         cur.execute("""
-            SELECT c.sensor_id,
+            SELECT s.serial_number AS sensor_id,
                    split_part(z.path::text, '.', -1) AS zone_id,
                    c.valid_from AS timestamp,
                    c.r2_score,
-                   c.rmse,
-                   c.coefficients
+                   c.coef_a, c.coef_b
             FROM calibration c
             JOIN sensors s ON s.id = c.sensor_id
-            JOIN zones z ON z.id = c.zone_id
+            JOIN zones z ON z.id = s.zone_id
             WHERE c.valid_from > now() - (%s || ' hours')::interval
-            ORDER BY c.sensor_id, c.valid_from
+            ORDER BY s.serial_number, c.valid_from
         """, [str(hours)])
         rows = cur.fetchall()
 
     drifts: list[dict[str, Any]] = []
     sensor_prev: dict[str, float] = {}
     for r in rows:
-        coeffs = r["coefficients"] if isinstance(r["coefficients"], dict) else {}
-        coeff_vals = [float(v) for v in coeffs.values() if isinstance(v, (int, float))]
-        mean_coeff = sum(coeff_vals) / len(coeff_vals) if coeff_vals else 0.0
+        coef_a = float(r["coef_a"]) if r["coef_a"] is not None else 0.0
+        coef_b = float(r["coef_b"]) if r["coef_b"] is not None else 0.0
+        mean_coeff = (coef_a + coef_b) / 2.0
         sid = str(r["sensor_id"])
         drift_pct = 0.0
         if sid in sensor_prev and sensor_prev[sid] != 0:
@@ -1422,7 +1445,7 @@ def calibration_drift(request: Request, hours: int = 168):
         drifts.append({
             "sensor_id": sid,
             "zone_id": str(r["zone_id"]),
-            "timestamp": r["timestamp"].isoformat(),
+            "timestamp": r["timestamp"].isoformat() if hasattr(r["timestamp"], "isoformat") else str(r["timestamp"]),
             "drift_pct": round(drift_pct, 3),
         })
 

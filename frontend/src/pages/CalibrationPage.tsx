@@ -188,8 +188,6 @@ export function CalibrationPage() {
                         <th className="pb-2 pr-3 font-medium">Sensor</th>
                         <th className="pb-2 pr-3 font-medium">Zone</th>
                         <th className="pb-2 pr-3 font-medium">R²</th>
-                        <th className="pb-2 pr-3 font-medium">RMSE</th>
-                        <th className="pb-2 pr-3 font-medium">Samples</th>
                         <th className="pb-2 font-medium">Coefficients</th>
                       </tr>
                     </thead>
@@ -214,10 +212,6 @@ export function CalibrationPage() {
                               {r.r2_score.toFixed(3)}
                             </span>
                           </td>
-                          <td className="py-2.5 pr-3 font-mono text-slate-400">
-                            {r.rmse.toFixed(3)}
-                          </td>
-                          <td className="py-2.5 pr-3 text-slate-400">{r.n_samples}</td>
                           <td className="py-2.5">
                             <code className="text-[10px] text-slate-500">
                               {Object.entries(r.new_coefficients ?? {})
