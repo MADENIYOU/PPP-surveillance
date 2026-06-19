@@ -1,11 +1,8 @@
 import { Link } from 'react-router-dom';
 
-import { Header } from '../components/ui/Header';
-
 export function AboutPage() {
   return (
     <div className="min-h-screen bg-gray-50">
-      <Header />
       <main className="mx-auto max-w-2xl space-y-4 p-4 text-gray-700">
         <Link to="/" className="text-sm text-blue-600 hover:underline">
           ← Retour
