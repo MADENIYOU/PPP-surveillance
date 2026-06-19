@@ -97,32 +97,27 @@ from(bucket: "{bucket}")
 
 
 def _compute_p95_latency(client, bucket: str, hours: int = 1) -> Optional[float]:
-    """P95 de la latence capteur→InfluxDB en ms, via le champ `seq` qui porte
-    le timestamp encodé de façon indirecte — ici on utilise l'écart entre
-    l'horodatage InfluxDB (`_time`) et `now()` au moment de la requête comme
-    proxy de latence bout-en-bout (§9.1 Q6)."""
+    """P95 de la latence capteur→InfluxDB en ms.
+
+    Proxy : âge des points au moment de la requête (now() - _time).
+    Représente le délai bout-en-bout perçu par le consommateur (§9.1 Q6)."""
     flux = f"""
-import "experimental"
 from(bucket: "{bucket}")
   |> range(start: -{hours}h)
   |> filter(fn: (r) => r._measurement == "air_quality_raw")
-  |> filter(fn: (r) => r._field == "seq")
-  |> map(fn: (r) => ({{
-       r with latency_ms: float(v: uint(v: experimental.subDuration(d: duration(v: uint(v: r._time)), from: r._time))) / 1000000.0
-  }}))
-  |> keep(columns: ["latency_ms"])
+  |> filter(fn: (r) => r._field == "pm25")
+  |> map(fn: (r) => ({{r with _value: float(v: int(v: now()) - int(v: r._time)) / 1000000.0}}))
   |> quantile(q: 0.95)
 """
-    # Simplification : requête directe Flux de quantile complexe ; fallback None si non implémenté
     try:
-        tables = get_influxdb_client().query_api().query(flux, org=INFLUX_ORG)
+        tables = client.query_api().query(flux, org=INFLUX_ORG)
         for table in tables:
             for rec in table.records:
                 v = rec.get_value()
                 if v is not None:
-                    return float(v)
-    except Exception:
-        pass
+                    return round(float(v), 1)
+    except Exception as exc:
+        LOGGER.warning("Q6_latency_flux_error err=%s", exc)
     return None
 
 
@@ -130,17 +125,26 @@ from(bucket: "{bucket}")
 # Métriques PostgreSQL (Q3-Q5)
 # ============================================================================
 def fill_actual_values(pool: PostgresPool) -> None:
-    """Joint les prédictions avec les mesures réelles pour calculer le RMSE (§9.1 Q3-Q4)."""
+    """Joint les prédictions avec les mesures réelles pour calculer le RMSE (§9.1 Q3-Q4).
+
+    pm25_lag_1h est null tant que le simulateur n'a pas assez d'historique ;
+    on utilise pm25_rolling_mean_1h comme fallback (disponible dès le 1er cycle)."""
     with pool.cursor() as cur:
         cur.execute("""
             UPDATE predictions p
             SET actual_value = (
-                -- ->> renvoie du text ; actual_value est double precision → cast obligatoire
-                SELECT (fs.features->>'pm25_lag_1h')::double precision
+                SELECT COALESCE(
+                    (fs.features->>'pm25_lag_1h')::double precision,
+                    (fs.features->>'pm25_rolling_mean_1h')::double precision
+                )
                 FROM feature_store fs
                 WHERE fs.zone_id = p.zone_id
                   AND fs.timestamp >= p.target_timestamp - interval '30 minutes'
                   AND fs.timestamp <= p.target_timestamp + interval '30 minutes'
+                  AND COALESCE(
+                      (fs.features->>'pm25_lag_1h')::double precision,
+                      (fs.features->>'pm25_rolling_mean_1h')::double precision
+                  ) IS NOT NULL
                 ORDER BY ABS(EXTRACT(EPOCH FROM (fs.timestamp - p.target_timestamp)))
                 LIMIT 1
             )
