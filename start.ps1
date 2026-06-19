@@ -150,6 +150,19 @@ if ($migrationCheck -eq "0" -or [string]::IsNullOrWhiteSpace($migrationCheck)) {
     Write-Ok "Migrations deja a jour"
 }
 
+# Verifie que les 10 capteurs sont seedes (03_seed_zones_sensors.sql ne tourne
+# qu'a l'init Docker — un volume existant peut manquer les capteurs)
+$sensorCount = docker exec dakar-postgres psql -U dakar_admin -d dakar_pollution -tAq `
+    -c "SELECT COUNT(*) FROM sensors;" 2>$null
+$sensorCount = [int]($sensorCount -replace '\s','')
+if ($sensorCount -lt 10) {
+    Write-Step "  Seed capteurs (03_seed_zones_sensors.sql) - $sensorCount/10 presents..."
+    Get-Content ".\infra\postgres\init\03_seed_zones_sensors.sql" | docker exec -i dakar-postgres psql -U dakar_admin -d dakar_pollution
+    Write-Ok "Capteurs seedes"
+} else {
+    Write-Ok "Capteurs deja presents ($sensorCount)"
+}
+
 # -- Etape 3 : Build images ----------------------------------------------------
 Write-Step "Etape 3/6 - Build images pipeline + simulateur + backend + frontend..."
 Invoke-Expression "$ComposePipeline build --quiet pipeline-workers simulator" | Select-Object -Last 5

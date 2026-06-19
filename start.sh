@@ -126,6 +126,19 @@ else
   info "Migrations déjà à jour"
 fi
 
+# Vérifie que les 10 capteurs sont seedés (03_seed_zones_sensors.sql ne tourne
+# qu'à l'init Docker — un volume existant peut manquer les capteurs)
+SENSOR_COUNT=$(docker exec dakar-postgres psql -U dakar_admin -d dakar_pollution -tAq \
+  -c "SELECT COUNT(*) FROM sensors;" 2>/dev/null || echo "0")
+if [ "${SENSOR_COUNT:-0}" -lt 10 ]; then
+  step "  Seed capteurs (03_seed_zones_sensors.sql) — $SENSOR_COUNT/10 présents…"
+  docker exec -i dakar-postgres psql -U dakar_admin -d dakar_pollution \
+    < "./infra/postgres/init/03_seed_zones_sensors.sql"
+  info "Capteurs seedés"
+else
+  info "Capteurs déjà présents ($SENSOR_COUNT)"
+fi
+
 # ── Étape 3 : Build images ───────────────────────────────────────────
 step "Étape 3/6 — Build images pipeline + simulateur + backend + frontend…"
 $COMPOSE_PIPELINE build --quiet pipeline-workers simulator 2>&1 | tail -5

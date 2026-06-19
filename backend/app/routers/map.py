@@ -27,8 +27,18 @@ def kriging_map(request: Request,
         """)
         row = cur.fetchone()
     if row is None:
-        raise HTTPException(404, detail={"code": "NOT_FOUND",
-                                         "message": "Aucune heatmap kriging disponible."})
+        return {
+            "metadata": {
+                "generated_at": None,
+                "age_minutes": None,
+                "pm25_min": None,
+                "pm25_max": None,
+                "rmse_loo": None,
+                "n_sensors_used": None,
+                "status": "computing",
+            },
+            "geojson": {"type": "FeatureCollection", "features": []},
+        }
 
     now = datetime.now(timezone.utc)
     age_minutes = (now - row["computed_at"]).total_seconds() / 60

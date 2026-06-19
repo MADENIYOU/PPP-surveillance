@@ -146,7 +146,7 @@ function lines(rows,series,h=200){
   const max=Math.max(...allv,1),min=Math.min(...allv,0),rng=(max-min)||1;
   const sv=series.map(s=>{const pts=rows.map((r,i)=>r[s.key]==null?null:`${(i*dx).toFixed(1)},${(h-10-((r[s.key]-min)/rng)*(h-20)).toFixed(1)}`).filter(Boolean).join(' ');
     return `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2"/>`;}).join('');
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="height:${h}px">${sv}</svg>
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block;width:100%;max-width:100%;height:${h}px;overflow:hidden">${sv}</svg>
     <div class="legend">`+series.map(s=>`<span><i style="background:${s.color}"></i>${s.label}</span>`).join('')+`</div>`;
 }
 // donut from [{label,value,color}]
