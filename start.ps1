@@ -150,8 +150,6 @@ Invoke-Expression "$ComposeAll build --quiet pipeline-workers simulator"
 Invoke-Expression "$ComposeApp build --quiet"
 Write-Ok "Images pretes (pipeline + simulateur + backend + frontend)"
 
-docker network create dakar-net --driver bridge 2>$null | Out-Null
-
 if (-not $NoTrain) {
     $allOk = $true
     foreach ($f in @("calibration_rf_pm25.pkl", "anomaly_if.pkl", "lstm_full.pt", "prophet_pm25.pkl")) {
