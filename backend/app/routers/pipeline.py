@@ -187,7 +187,7 @@ def pipeline_status(request: Request):
             "reports_processed": row["reports_processed"],
         }
 
-    row = _safe_query("data_quality_metrics", "SELECT MAX(computed_at) AS last_run, metrics FROM data_quality_metrics ORDER BY computed_at DESC LIMIT 1")
+    row = _safe_query("data_quality_metrics", "SELECT computed_at AS last_run, metrics FROM data_quality_metrics ORDER BY computed_at DESC LIMIT 1")
     if row:
         flows["monitoring"] = {
             "status": "healthy" if row["last_run"] and (_now() - row["last_run"]).total_seconds() < 3600 else "stale",
@@ -825,14 +825,12 @@ def pipeline_flow_detail(request: Request, name: str):
             result["total_predictions"] = row["total"] or 0
 
             # prediction accuracy RMSE per horizon
+            # (air_quality table stores raw PG copy — absent when ingestion writes only to InfluxDB)
             cur.execute("""
                 SELECT p.horizon_minutes AS horizon,
-                       SQRT(AVG(POWER(p.predicted_value - COALESCE(aq.pm25, aq.pm10), 2))) AS rmse,
+                       NULL::float AS rmse,
                        COUNT(*) AS predictions
                 FROM predictions p
-                LEFT JOIN air_quality aq ON aq.zone_id = p.zone_id
-                    AND aq.timestamp BETWEEN p.target_timestamp - interval '30 minutes'
-                                         AND p.target_timestamp + interval '30 minutes'
                 WHERE p.created_at > now() - interval '7 days'
                 GROUP BY p.horizon_minutes
                 ORDER BY p.horizon_minutes
@@ -885,23 +883,9 @@ def pipeline_flow_detail(request: Request, name: str):
                     "metrics": model_row["metrics"] if model_row["metrics"] else {},
                 }
 
-            # predicted vs actual scatter data
-            cur.execute("""
-                SELECT p.predicted_value,
-                       COALESCE(aq.pm25, aq.pm10) AS actual_value
-                FROM predictions p
-                LEFT JOIN air_quality aq ON aq.zone_id = p.zone_id
-                    AND aq.timestamp BETWEEN p.target_timestamp - interval '30 minutes'
-                                         AND p.target_timestamp + interval '30 minutes'
-                WHERE p.created_at > now() - interval '24 hours'
-                  AND aq.pm25 IS NOT NULL OR aq.pm10 IS NOT NULL
-                LIMIT 200
-            """)
-            result["predicted_vs_actual"] = [
-                {"predicted": round(float(r["predicted_value"]), 2),
-                 "actual": round(float(r["actual_value"]), 2)}
-                for r in cur.fetchall()
-            ]
+            # predicted vs actual — requires air_quality PG table (absent when ingestion
+            # writes only to InfluxDB); return empty list to avoid 500
+            result["predicted_vs_actual"] = []
 
     elif name == "kriging":
         with postgres.cursor() as cur:

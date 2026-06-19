@@ -131,10 +131,9 @@ function barsH(items){
 function gauge(val,max,label,color){
   const pct=Math.max(0,Math.min(1,(val||0)/max)), a=Math.PI*(1-pct), r=46,cx=60,cy=56;
   const x=cx+r*Math.cos(a), y=cy-r*Math.sin(a);
-  const big=pct>0.5?1:0;
   return `<div class="gauge-wrap"><svg viewBox="0 0 120 70" style="height:90px">
     <path d="M14,56 A46,46 0 0,1 106,56" fill="none" stroke="#16243f" stroke-width="9" stroke-linecap="round"/>
-    <path d="M14,56 A46,46 0 ${big},1 ${x.toFixed(1)},${y.toFixed(1)}" fill="none" stroke="${color}" stroke-width="9" stroke-linecap="round"/>
+    <path d="M14,56 A46,46 0 0,1 ${x.toFixed(1)},${y.toFixed(1)}" fill="none" stroke="${color}" stroke-width="9" stroke-linecap="round"/>
     <text x="60" y="50" text-anchor="middle" fill="#e8eef7" font-size="17" font-weight="800">${val==null?'—':val}</text></svg>
     <div class="l" style="text-align:center">${label}</div></div>`;
 }
