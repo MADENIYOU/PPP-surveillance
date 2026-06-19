@@ -145,10 +145,10 @@ if ($migrationCheck -eq "0" -or [string]::IsNullOrWhiteSpace($migrationCheck)) {
     Write-Ok "Migrations deja a jour"
 }
 
-Write-Step "Etape 3/6 - Build images pipeline + backend + frontend..."
-Invoke-Expression "$ComposeAll build --quiet pipeline-workers"
+Write-Step "Etape 3/6 - Build images pipeline + simulateur + backend + frontend..."
+Invoke-Expression "$ComposeAll build --quiet pipeline-workers simulator"
 Invoke-Expression "$ComposeApp build --quiet"
-Write-Ok "Images pretes (pipeline + backend + frontend)"
+Write-Ok "Images pretes (pipeline + simulateur + backend + frontend)"
 
 docker network create dakar-net --driver bridge 2>$null | Out-Null
 
@@ -181,11 +181,8 @@ if (-not $NoTrain) {
     Write-Warn "Etape 4/6 - Entrainement skippe (-NoTrain) - pipeline en mode fallback"
 }
 
-Write-Step "Etape 5/6 - Demarrage du pipeline (workers + flows)..."
-Invoke-Expression "$ComposePipeline up -d"
-
-Write-Step "Etape 6/6 - Demarrage backend (API) + frontend (dashboard)..."
-Invoke-Expression "$ComposeApp up -d"
+Write-Step "Etapes 5 & 6/6 - Demarrage pipeline (workers, flows, simulateur) + backend + frontend..."
+Invoke-Expression "$ComposeAll up -d"
 
 if ($WithSim) {
     Write-Step "Demarrage du simulateur de capteurs..."
