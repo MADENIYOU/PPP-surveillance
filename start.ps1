@@ -54,10 +54,12 @@ param(
 
 $ErrorActionPreference = "Continue"
 $PSNativeCommandUseErrorActionPreference = $true
-function Write-Ok    { param($msg) Write-Host "[OK] $msg" -ForegroundColor Green }
-function Write-Warn  { param($msg) Write-Host "[!] $msg" -ForegroundColor Yellow }
-function Write-Fail  { param($msg) Write-Host "[X] $msg" -ForegroundColor Red; exit 1 }
-function Write-Hr    { Write-Host ("-" * 60) -ForegroundColor Cyan }
+
+function Write-Step { param($msg) Write-Host "[->] $msg" -ForegroundColor Cyan }
+function Write-Ok   { param($msg) Write-Host "[OK] $msg" -ForegroundColor Green }
+function Write-Warn { param($msg) Write-Host "[!] $msg"  -ForegroundColor Yellow }
+function Write-Fail { param($msg) Write-Host "[X] $msg"  -ForegroundColor Red; exit 1 }
+function Write-Hr   { Write-Host ("-" * 60) -ForegroundColor Cyan }
 
 $ComposeInfra    = "docker compose -f docker-compose.infra.yml"
 $ComposePipeline = "docker compose -f docker-compose.infra.yml -f docker-compose.pipeline.yml"
@@ -66,6 +68,7 @@ $ComposeAll      = "docker compose -f docker-compose.infra.yml -f docker-compose
 $ModelsDir       = ".\pipeline\models"
 $MigrationFile   = ".\infra\postgres\init\02_missing_tables.sql"
 
+# -- Commandes secondaires -----------------------------------------------------
 if ($Down) {
     Write-Step "Arret de tous les services..."
     Invoke-Expression "$ComposeAll down"
@@ -90,11 +93,13 @@ if ($Status) {
     exit 0
 }
 
+# ------------------------------------------------------------------------------
 Write-Hr
 Write-Host "  Plateforme Surveillance Pollution - Dakar" -ForegroundColor Green
 Write-Host "  Demarrage complet en une commande"
 Write-Hr
 
+# -- Prerequis -----------------------------------------------------------------
 Write-Step "Verification des prerequis..."
 try { $null = Get-Command docker -ErrorAction Stop }
 catch { Write-Fail "Docker non trouve. Installer Docker Desktop." }
@@ -110,27 +115,30 @@ if (-not (Test-Path ".env")) {
 }
 Write-Ok "Prerequis OK"
 
+# -- Etape 1 : Infra -----------------------------------------------------------
 Write-Step "Etape 1/6 - Demarrage infra (Postgres, InfluxDB, Mosquitto, Redis)..."
 $postgresImg = docker image inspect dakar-postgres-postgis-pgvector:16 2>$null
 if (-not $postgresImg) {
     Write-Step "  Build image Postgres + PostGIS + pgvector..."
-    Invoke-Expression "$ComposeInfra build --quiet postgres"
+    Invoke-Expression "$ComposeInfra build --quiet postgres" | Select-Object -Last 3
     Write-Ok "  Image dakar-postgres-postgis-pgvector prete"
 } else {
     Write-Ok "  Image Postgres deja presente (skip build)"
 }
 Invoke-Expression "$ComposeInfra up -d"
+
 Write-Step "Attente healthchecks (max 2 min)..."
 $deadline = (Get-Date).AddSeconds(120)
 do {
     if ((Get-Date) -gt $deadline) { Write-Fail "Timeout healthcheck - verifier : .\start.ps1 -Logs" }
     Start-Sleep -Seconds 4
-    $pgHealth  = docker inspect dakar-postgres  --format='{{.State.Health.Status}}' 2>$null
-    $influxH   = docker inspect dakar-influxdb  --format='{{.State.Health.Status}}' 2>$null
-    $mqttH     = docker inspect dakar-mosquitto --format='{{.State.Health.Status}}' 2>$null
+    $pgHealth = docker inspect dakar-postgres  --format='{{.State.Health.Status}}' 2>$null
+    $influxH  = docker inspect dakar-influxdb  --format='{{.State.Health.Status}}' 2>$null
+    $mqttH    = docker inspect dakar-mosquitto --format='{{.State.Health.Status}}' 2>$null
 } until ($pgHealth -eq "healthy" -and $influxH -eq "healthy" -and $mqttH -eq "healthy")
 Write-Ok "Infra prete"
 
+# -- Etape 2 : Migrations SQL --------------------------------------------------
 Write-Step "Etape 2/6 - Application des migrations SQL..."
 $migrationCheck = docker exec dakar-postgres psql -U dakar_admin -d dakar_pollution -tAq `
     -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name='data_quality_metrics';" 2>$null
@@ -142,26 +150,32 @@ if ($migrationCheck -eq "0" -or [string]::IsNullOrWhiteSpace($migrationCheck)) {
     Write-Ok "Migrations deja a jour"
 }
 
+# -- Etape 3 : Build images ----------------------------------------------------
 Write-Step "Etape 3/6 - Build images pipeline + simulateur + backend + frontend..."
-Invoke-Expression "$ComposeAll build --quiet pipeline-workers simulator"
-Invoke-Expression "$ComposeApp build --quiet"
+Invoke-Expression "$ComposePipeline build --quiet pipeline-workers simulator" | Select-Object -Last 5
+Invoke-Expression "$ComposeApp build --quiet" | Select-Object -Last 5
 Write-Ok "Images pretes (pipeline + simulateur + backend + frontend)"
 
+# -- Etape 4 : Entrainement initial --------------------------------------------
 if (-not $NoTrain) {
     $allOk = $true
     foreach ($f in @("calibration_rf_pm25.pkl", "anomaly_if.pkl", "lstm_full.pt", "prophet_pm25.pkl")) {
         if (-not (Test-Path "$ModelsDir\$f")) { $allOk = $false }
     }
+
     $skipArgs = @()
-    Invoke-Expression "$ComposePipeline run --rm pipeline-workers python -c `"import torch`"" *> $null
+    Invoke-Expression "$ComposePipeline run --rm pipeline-workers python -c `"import torch`"" *>$null
     if ($LASTEXITCODE -ne 0) { $skipArgs += "lstm" }
-    Invoke-Expression "$ComposePipeline run --rm pipeline-workers python -c `"import prophet`"" *> $null
+    Invoke-Expression "$ComposePipeline run --rm pipeline-workers python -c `"import prophet`"" *>$null
     if ($LASTEXITCODE -ne 0) { $skipArgs += "prophet" }
+
     if ($allOk) {
         Write-Ok "Etape 4/6 - Modeles deja presents - skip"
     } else {
+        $skipNote = if ($skipArgs.Count -gt 0) { " (LSTM/Prophet sautes : deps absentes)" } else { " · LSTM · Prophet" }
         Write-Step "Etape 4/6 - Entrainement des modeles (~3-5 min)..."
-        Write-Step "  RandomForest (calibration), IsolationForest (anomalie)"
+        Write-Step "  RandomForest (calibration) · IsolationForest (anomalie)$skipNote"
+        Write-Step "  Chaque modele est enregistre dans la table 'models' (page Modeles du dashboard)"
         if (-not (Test-Path $ModelsDir)) { New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null }
         $absModels = (Resolve-Path $ModelsDir).Path
         $skipFlag  = if ($skipArgs.Count -gt 0) { "--skip " + ($skipArgs -join " ") } else { "" }
@@ -170,15 +184,17 @@ if (-not $NoTrain) {
                      "pipeline-workers " +
                      "python training/train_all.py --no-download $skipFlag --epochs 5"
         Invoke-Expression $trainCmd
-        Write-Ok "Modeles entraines"
+        Write-Ok "Modeles entraines et enregistres"
     }
 } else {
     Write-Warn "Etape 4/6 - Entrainement skippe (-NoTrain) - pipeline en mode fallback"
 }
 
+# -- Etapes 5 & 6 : Lancement de toute la stack --------------------------------
 Write-Step "Etapes 5 & 6/6 - Demarrage pipeline (workers, flows, simulateur) + backend + frontend..."
 Invoke-Expression "$ComposeAll up -d"
 
+# Simulateur optionnel
 if ($WithSim) {
     Write-Step "Demarrage du simulateur de capteurs..."
     $simLog = "$env:TEMP\dakar-simulator.log"
@@ -190,6 +206,7 @@ if ($WithSim) {
     Write-Ok "Simulateur demarre (logs : $simLog)"
 }
 
+# -- Resume --------------------------------------------------------------------
 Write-Hr
 Write-Host ""
 Write-Host "  Plateforme demarree - tout tourne en permanence" -ForegroundColor Green
