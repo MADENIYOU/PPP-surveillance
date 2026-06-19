@@ -313,7 +313,13 @@ def _active_zones(pool: PostgresPool) -> list[str]:
 
 def _zone_int(pool: PostgresPool, zone_slug: str) -> Optional[int]:
     with pool.cursor() as cur:
-        cur.execute("SELECT id FROM zones WHERE path ~ %s ORDER BY niveau DESC LIMIT 1", (f"*.{zone_slug}",))
+        # Exact match dakar.<slug> — évite de retourner une zone fantôme
+        # du style dakar.plateau.medina si la DB contient un résidu d'un
+        # ancien état (path ~ '*.slug' matcherait les deux).
+        cur.execute(
+            "SELECT id FROM zones WHERE path = ('dakar.' || %s)::ltree LIMIT 1",
+            (zone_slug,),
+        )
         row = cur.fetchone()
         return int(row["id"]) if row else None
 
