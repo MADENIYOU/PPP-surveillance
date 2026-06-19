@@ -99,8 +99,10 @@ Write-Hr
 Write-Step "Verification des prerequis..."
 try { $null = Get-Command docker -ErrorAction Stop }
 catch { Write-Fail "Docker non trouve. Installer Docker Desktop." }
+$ErrorActionPreference = "SilentlyContinue"
 docker info *>$null
 if ($LASTEXITCODE -ne 0) { Write-Fail "Docker daemon non demarre. Lancer Docker Desktop." }
+$ErrorActionPreference = "Stop"
 if (-not (Test-Path ".env")) {
     if (Test-Path ".env.example") {
         Write-Warn ".env absent - copie depuis .env.example (verifier les mots de passe !)"
